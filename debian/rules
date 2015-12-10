@@ -1,0 +1,19 @@
+#!/usr/bin/make -f
+# -*- makefile -*-
+
+# Uncomment this to turn on verbose mode.
+#export DH_VERBOSE=1
+
+override_dh_auto_build:
+#	PORTABLE=1 make all
+#	PORTABLE=1 make shared_lib
+	make all
+	make shared_lib
+
+override_dh_auto_install:
+	dh_auto_install --destdir=$(CURDIR)/debian/tmp/usr/
+
+%:
+	dh $@ --dbg-package=librocksdb4.1-dbg --parallel --fail-missing
+
+.PHONY: override_dh_auto_build override_dh_auto_test override_dh_auto_install

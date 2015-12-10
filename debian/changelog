@@ -1,0 +1,5 @@
+rocksdb (4.1-1) unstable; urgency=low
+
+  * Initial upload (closes: #793491).
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Thu, 10 Dec 2015 18:41:55 +0100
