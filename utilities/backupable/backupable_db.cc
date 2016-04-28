@@ -180,7 +180,8 @@ class BackupEngineImpl : public BackupEngine {
       return files_;
     }
 
-    Status LoadFromFile(const std::string& backup_dir);
+    Status LoadFromFile(const std::string& backup_dir,
+                        bool use_size_in_file_name);
     Status StoreToFile(bool sync);
 
     std::string GetInfoString() {
@@ -520,10 +521,10 @@ Status BackupEngineImpl::Initialize() {
       continue;
     }
     assert(backups_.find(backup_id) == backups_.end());
-    backups_.insert(std::move(
+    backups_.insert(
         std::make_pair(backup_id, unique_ptr<BackupMeta>(new BackupMeta(
                                       GetBackupMetaFile(backup_id),
-                                      &backuped_file_infos_, backup_env_)))));
+                                      &backuped_file_infos_, backup_env_))));
   }
 
   latest_backup_id_ = 0;
@@ -542,7 +543,8 @@ Status BackupEngineImpl::Initialize() {
   } else {  // Load data from storage
     // load the backups if any
     for (auto& backup : backups_) {
-      Status s = backup.second->LoadFromFile(options_.backup_dir);
+      Status s = backup.second->LoadFromFile(
+          options_.backup_dir, options_.use_file_size_in_file_name);
       if (!s.ok()) {
         Log(options_.info_log, "Backup %u corrupted -- %s", backup.first,
             s.ToString().c_str());
@@ -617,10 +619,10 @@ Status BackupEngineImpl::CreateNewBackup(
 
   BackupID new_backup_id = latest_backup_id_ + 1;
   assert(backups_.find(new_backup_id) == backups_.end());
-  auto ret = backups_.insert(std::move(
+  auto ret = backups_.insert(
       std::make_pair(new_backup_id, unique_ptr<BackupMeta>(new BackupMeta(
                                         GetBackupMetaFile(new_backup_id),
-                                        &backuped_file_infos_, backup_env_)))));
+                                        &backuped_file_infos_, backup_env_))));
   assert(ret.second == true);
   auto& new_backup = ret.first->second;
   new_backup->RecordTimestamp();
@@ -1342,27 +1344,29 @@ Status BackupEngineImpl::GarbageCollect() {
   assert(!read_only_);
   Log(options_.info_log, "Starting garbage collection");
 
-  // delete obsolete shared files
-  std::vector<std::string> shared_children;
-  {
-    auto s = backup_env_->GetChildren(GetAbsolutePath(GetSharedFileRel()),
-                                      &shared_children);
-    if (!s.ok()) {
-      return s;
+  if (options_.share_table_files) {
+    // delete obsolete shared files
+    std::vector<std::string> shared_children;
+    {
+      auto s = backup_env_->GetChildren(GetAbsolutePath(GetSharedFileRel()),
+                                        &shared_children);
+      if (!s.ok()) {
+        return s;
+      }
     }
-  }
-  for (auto& child : shared_children) {
-    std::string rel_fname = GetSharedFileRel(child);
-    auto child_itr = backuped_file_infos_.find(rel_fname);
-    // if it's not refcounted, delete it
-    if (child_itr == backuped_file_infos_.end() ||
-        child_itr->second->refs == 0) {
-      // this might be a directory, but DeleteFile will just fail in that
-      // case, so we're good
-      Status s = backup_env_->DeleteFile(GetAbsolutePath(rel_fname));
-      Log(options_.info_log, "Deleting %s -- %s", rel_fname.c_str(),
-          s.ToString().c_str());
-      backuped_file_infos_.erase(rel_fname);
+    for (auto& child : shared_children) {
+      std::string rel_fname = GetSharedFileRel(child);
+      auto child_itr = backuped_file_infos_.find(rel_fname);
+      // if it's not refcounted, delete it
+      if (child_itr == backuped_file_infos_.end() ||
+          child_itr->second->refs == 0) {
+        // this might be a directory, but DeleteFile will just fail in that
+        // case, so we're good
+        Status s = backup_env_->DeleteFile(GetAbsolutePath(rel_fname));
+        Log(options_.info_log, "Deleting %s -- %s", rel_fname.c_str(),
+            s.ToString().c_str());
+        backuped_file_infos_.erase(rel_fname);
+      }
     }
   }
 
@@ -1451,6 +1455,55 @@ Status BackupEngineImpl::BackupMeta::Delete(bool delete_meta) {
   return s;
 }
 
+namespace {
+bool ParseStrToUint64(const std::string& str, uint64_t* out) {
+  try {
+    unsigned long ul = std::stoul(str);
+    *out = static_cast<uint64_t>(ul);
+    return true;
+  } catch (const std::invalid_argument&) {
+    return false;
+  } catch (const std::out_of_range&) {
+    return false;
+  }
+}
+
+// Parse file name in the format of
+// "shared_checksum/<file_number>_<checksum>_<size>.sst, and fill `size` with
+// the parsed <size> part.
+// Will also accept only name part, or a file path in URL format.
+// if file name doesn't have the extension of "sst", or doesn't have '_' as a
+// part of the file name, or we can't parse a number from the sub string
+// between the last '_' and '.', return false.
+bool GetFileSizeFromBackupFileName(const std::string full_name,
+                                   uint64_t* size) {
+  auto dot_pos = full_name.find_last_of('.');
+  if (dot_pos == std::string::npos) {
+    return false;
+  }
+  if (full_name.substr(dot_pos + 1) != "sst") {
+    return false;
+  }
+  auto last_underscore_pos = full_name.find_last_of('_');
+  if (last_underscore_pos == std::string::npos) {
+    return false;
+  }
+  if (dot_pos <= last_underscore_pos + 2) {
+    return false;
+  }
+  return ParseStrToUint64(full_name.substr(last_underscore_pos + 1,
+                                           dot_pos - last_underscore_pos - 1),
+                          size);
+}
+}  // namespace
+
+namespace test {
+bool TEST_GetFileSizeFromBackupFileName(const std::string full_name,
+                                        uint64_t* size) {
+  return GetFileSizeFromBackupFileName(full_name, size);
+}
+}  // namespace test
+
 // each backup meta file is of the format:
 // <timestamp>
 // <seq number>
@@ -1458,8 +1511,8 @@ Status BackupEngineImpl::BackupMeta::Delete(bool delete_meta) {
 // <file1> <crc32(literal string)> <crc32_value>
 // <file2> <crc32(literal string)> <crc32_value>
 // ...
-Status BackupEngineImpl::BackupMeta::LoadFromFile(
-    const std::string& backup_dir) {
+Status BackupEngineImpl::BackupMeta::LoadFromFile(const std::string& backup_dir,
+                                                  bool use_size_in_file_name) {
   assert(Empty());
   Status s;
   unique_ptr<SequentialFile> backup_meta_file;
@@ -1501,9 +1554,12 @@ Status BackupEngineImpl::BackupMeta::LoadFromFile(
     if (file_info) {
       size = file_info->size;
     } else {
-      s = env_->GetFileSize(backup_dir + "/" + filename, &size);
-      if (!s.ok()) {
-        return s;
+      if (!use_size_in_file_name ||
+          !GetFileSizeFromBackupFileName(filename, &size)) {
+        s = env_->GetFileSize(backup_dir + "/" + filename, &size);
+        if (!s.ok()) {
+          return s;
+        }
       }
     }
 

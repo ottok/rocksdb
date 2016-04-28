@@ -55,7 +55,8 @@ struct FileDescriptor {
     return packed_number_and_path_id & kFileNumberMask;
   }
   uint32_t GetPathId() const {
-    return packed_number_and_path_id / (kFileNumberMask + 1);
+    return static_cast<uint32_t>(
+        packed_number_and_path_id / (kFileNumberMask + 1));
   }
   uint64_t GetFileSize() const { return file_size; }
 };
@@ -236,6 +237,8 @@ class VersionEdit {
   // return true on success.
   bool EncodeTo(std::string* dst) const;
   Status DecodeFrom(const Slice& src);
+
+  const char* DecodeNewFile4From(Slice* input);
 
   typedef std::set<std::pair<int, uint64_t>> DeletedFileSet;
 

@@ -62,6 +62,7 @@ FlushJob::FlushJob(const std::string& dbname, ColumnFamilyData* cfd,
                    InstrumentedMutex* db_mutex,
                    std::atomic<bool>* shutting_down,
                    std::vector<SequenceNumber> existing_snapshots,
+                   SequenceNumber earliest_write_conflict_snapshot,
                    JobContext* job_context, LogBuffer* log_buffer,
                    Directory* db_directory, Directory* output_file_directory,
                    CompressionType output_compression, Statistics* stats,
@@ -75,6 +76,7 @@ FlushJob::FlushJob(const std::string& dbname, ColumnFamilyData* cfd,
       db_mutex_(db_mutex),
       shutting_down_(shutting_down),
       existing_snapshots_(std::move(existing_snapshots)),
+      earliest_write_conflict_snapshot_(earliest_write_conflict_snapshot),
       job_context_(job_context),
       log_buffer_(log_buffer),
       db_directory_(db_directory),
@@ -92,7 +94,8 @@ FlushJob::~FlushJob() {
 }
 
 void FlushJob::ReportStartedFlush() {
-  ThreadStatusUtil::SetColumnFamily(cfd_);
+  ThreadStatusUtil::SetColumnFamily(cfd_, cfd_->ioptions()->env,
+                                    cfd_->options()->enable_thread_tracking);
   ThreadStatusUtil::SetThreadOperation(ThreadStatus::OP_FLUSH);
   ThreadStatusUtil::SetThreadOperationProperty(
       ThreadStatus::COMPACTION_JOB_ID,
@@ -197,7 +200,7 @@ Status FlushJob::WriteLevel0Table(const autovector<MemTable*>& mems,
     if (log_buffer_) {
       log_buffer_->FlushBufferToLog();
     }
-    std::vector<Iterator*> memtables;
+    std::vector<InternalIterator*> memtables;
     ReadOptions ro;
     ro.total_order_seek = true;
     Arena arena;
@@ -231,13 +234,15 @@ Status FlushJob::WriteLevel0Table(const autovector<MemTable*>& mems,
 
       TEST_SYNC_POINT_CALLBACK("FlushJob::WriteLevel0Table:output_compression",
                                &output_compression_);
-      s = BuildTable(
-          dbname_, db_options_.env, *cfd_->ioptions(), env_options_,
-          cfd_->table_cache(), iter.get(), meta, cfd_->internal_comparator(),
-          cfd_->int_tbl_prop_collector_factories(), existing_snapshots_,
-          output_compression_, cfd_->ioptions()->compression_opts,
-          mutable_cf_options_.paranoid_file_checks, cfd_->internal_stats(),
-          Env::IO_HIGH, &info.table_properties);
+      s = BuildTable(dbname_, db_options_.env, *cfd_->ioptions(), env_options_,
+                     cfd_->table_cache(), iter.get(), meta,
+                     cfd_->internal_comparator(),
+                     cfd_->int_tbl_prop_collector_factories(), cfd_->GetID(),
+                     existing_snapshots_, earliest_write_conflict_snapshot_,
+                     output_compression_, cfd_->ioptions()->compression_opts,
+                     mutable_cf_options_.paranoid_file_checks,
+                     cfd_->internal_stats(), Env::IO_HIGH, &table_properties_);
+      info.table_properties = table_properties_;
       LogFlush(db_options_.info_log);
     }
     Log(InfoLogLevel::INFO_LEVEL, db_options_.info_log,
@@ -266,6 +271,7 @@ Status FlushJob::WriteLevel0Table(const autovector<MemTable*>& mems,
     if (!db_options_.disableDataSync && output_file_directory_ != nullptr) {
       output_file_directory_->Fsync();
     }
+    TEST_SYNC_POINT("FlushJob::WriteLevel0Table");
     db_mutex_->Lock();
   }
   base->Unref();

@@ -8,7 +8,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <jni.h>
-#include <strings.h>
 #include <memory>
 
 #include "include/org_rocksdb_Options.h"
@@ -571,6 +570,33 @@ void Java_org_rocksdb_Options_setKeepLogFileNum(
   if (s.ok()) {
     reinterpret_cast<rocksdb::Options*>(jhandle)->keep_log_file_num =
         keep_log_file_num;
+  } else {
+    rocksdb::IllegalArgumentExceptionJni::ThrowNew(env, s);
+  }
+}
+
+/*
+ * Class:     org_rocksdb_Options
+ * Method:    recycleLogFiles
+ * Signature: (J)J
+ */
+jlong Java_org_rocksdb_Options_recycleLogFileNum(JNIEnv* env, jobject jobj,
+                                                 jlong jhandle) {
+  return reinterpret_cast<rocksdb::Options*>(jhandle)->recycle_log_file_num;
+}
+
+/*
+ * Class:     org_rocksdb_Options
+ * Method:    setRecycleLogFiles
+ * Signature: (JJ)V
+ */
+void Java_org_rocksdb_Options_setRecycleLogFiles(JNIEnv* env, jobject jobj,
+                                                 jlong jhandle,
+                                                 jlong recycle_log_file_num) {
+  rocksdb::Status s = rocksdb::check_if_jlong_fits_size_t(recycle_log_file_num);
+  if (s.ok()) {
+    reinterpret_cast<rocksdb::Options*>(jhandle)->recycle_log_file_num =
+        recycle_log_file_num;
   } else {
     rocksdb::IllegalArgumentExceptionJni::ThrowNew(env, s);
   }
@@ -1153,7 +1179,7 @@ jbyte Java_org_rocksdb_Options_compactionStyle(
 void Java_org_rocksdb_Options_setMaxTableFilesSizeFIFO(
     JNIEnv* env, jobject jobj, jlong jhandle, jlong jmax_table_files_size) {
   reinterpret_cast<rocksdb::Options*>(jhandle)->compaction_options_fifo.max_table_files_size =
-    static_cast<long>(jmax_table_files_size);
+    static_cast<uint64_t>(jmax_table_files_size);
 }
 
 /*
@@ -2312,7 +2338,7 @@ jbyte Java_org_rocksdb_ColumnFamilyOptions_compactionStyle(
 void Java_org_rocksdb_ColumnFamilyOptions_setMaxTableFilesSizeFIFO(
     JNIEnv* env, jobject jobj, jlong jhandle, jlong jmax_table_files_size) {
   reinterpret_cast<rocksdb::ColumnFamilyOptions*>(jhandle)->compaction_options_fifo.max_table_files_size =
-    static_cast<long>(jmax_table_files_size);
+    static_cast<uint64_t>(jmax_table_files_size);
 }
 
 /*
@@ -3531,6 +3557,32 @@ void Java_org_rocksdb_DBOptions_setKeepLogFileNum(
 jlong Java_org_rocksdb_DBOptions_keepLogFileNum(
     JNIEnv* env, jobject jobj, jlong jhandle) {
   return reinterpret_cast<rocksdb::DBOptions*>(jhandle)->keep_log_file_num;
+}
+
+/*
+ * Class:     org_rocksdb_DBOptions
+ * Method:    setRecycleLogFiles
+ * Signature: (JJ)V
+ */
+void Java_org_rocksdb_DBOptions_setRecycleLogFileNum(
+    JNIEnv* env, jobject jobj, jlong jhandle, jlong recycle_log_file_num) {
+  rocksdb::Status s = rocksdb::check_if_jlong_fits_size_t(recycle_log_file_num);
+  if (s.ok()) {
+    reinterpret_cast<rocksdb::DBOptions*>(jhandle)->recycle_log_file_num =
+        recycle_log_file_num;
+  } else {
+    rocksdb::IllegalArgumentExceptionJni::ThrowNew(env, s);
+  }
+}
+
+/*
+ * Class:     org_rocksdb_DBOptions
+ * Method:    recycleLogFiles
+ * Signature: (J)J
+ */
+jlong Java_org_rocksdb_DBOptions_recycleLogFileNum(JNIEnv* env, jobject jobj,
+                                                   jlong jhandle) {
+  return reinterpret_cast<rocksdb::DBOptions*>(jhandle)->recycle_log_file_num;
 }
 
 /*

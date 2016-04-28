@@ -329,8 +329,8 @@ Status WalManager::GetSortedWalsOfType(const std::string& path,
         return s;
       }
 
-      log_files.push_back(std::move(std::unique_ptr<LogFile>(
-          new LogFileImpl(number, log_type, sequence, size_bytes))));
+      log_files.push_back(std::unique_ptr<LogFile>(
+          new LogFileImpl(number, log_type, sequence, size_bytes)));
     }
   }
   CompareLogByPointer compare_log_files;
@@ -448,8 +448,8 @@ Status WalManager::ReadFirstLine(const std::string& fname,
   reporter.fname = fname.c_str();
   reporter.status = &status;
   reporter.ignore_error = !db_options_.paranoid_checks;
-  log::Reader reader(std::move(file_reader), &reporter, true /*checksum*/,
-                     0 /*initial_offset*/);
+  log::Reader reader(db_options_.info_log, std::move(file_reader), &reporter,
+                     true /*checksum*/, 0 /*initial_offset*/, *sequence);
   std::string scratch;
   Slice record;
 

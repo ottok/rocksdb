@@ -2,14 +2,14 @@ Source: rocksdb
 Section: database
 Priority: optional
 Maintainer: Laszlo Boszormenyi (GCS) <gcs@debian.org>
-Build-Depends: debhelper (>= 9), g++ (>= 4:4.7), libgflags-dev, libgtest-dev, libsnappy-dev, libbz2-dev, zlib1g-dev
-Standards-Version: 3.9.6
+Build-Depends: debhelper (>= 9), g++ (>= 4:4.8), libgflags-dev, libgtest-dev, libsnappy-dev, libbz2-dev, zlib1g-dev
+Standards-Version: 3.9.8
 Homepage: http://rocksdb.org/
 
 Package: librocksdb-dev
 Section: libdevel
-Architecture: any
-Depends: ${misc:Depends}, ${shlibs:Depends},  librocksdb4.1 (= ${binary:Version})
+Architecture: amd64 arm64 ppc64el mips64el ppc64 sparc64
+Depends: ${misc:Depends}, ${shlibs:Depends},  librocksdb4.5 (= ${binary:Version})
 Description: persistent Key-Value Store for Flash and RAM Storage (development)
  C++ library providing an embedded key-value store, where keys and values are
  arbitrary byte streams. It was developed at Facebook based on LevelDB and
@@ -34,8 +34,8 @@ Description: persistent Key-Value Store for Flash and RAM Storage (development)
  This package contains libraries and header files for developing
  applications that use librocksdb .
 
-Package: librocksdb4.1
-Architecture: any
+Package: librocksdb4.5
+Architecture: amd64 arm64 ppc64el mips64el ppc64 sparc64
 Depends: ${misc:Depends}, ${shlibs:Depends}
 Description: persistent Key-Value Store for Flash and RAM Storage
  C++ library providing an embedded key-value store, where keys and values are
@@ -58,11 +58,11 @@ Description: persistent Key-Value Store for Flash and RAM Storage
    - Scales linearly with number of CPUs so that it works well on ARM
      processors
 
-Package: librocksdb4.1-dbg
-Architecture: any
+Package: librocksdb4.5-dbg
+Architecture: amd64 arm64 ppc64el mips64el ppc64 sparc64
 Section: debug
 Priority: extra
-Depends: ${misc:Depends}, librocksdb4.1 (= ${binary:Version})
+Depends: ${misc:Depends}, librocksdb4.5 (= ${binary:Version})
 Description: persistent Key-Value Store for Flash and RAM Storage (debug-symbols)
  C++ library providing an embedded key-value store, where keys and values are
  arbitrary byte streams. It was developed at Facebook based on LevelDB and
@@ -84,4 +84,4 @@ Description: persistent Key-Value Store for Flash and RAM Storage (debug-symbols
    - Scales linearly with number of CPUs so that it works well on ARM
      processors
  .
- This package contains debug symbols for the librocksdb4.1 library.
+ This package contains debug symbols for the librocksdb4.5 library.

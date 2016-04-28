@@ -165,10 +165,22 @@ class TransactionBaseImpl : public Transaction {
   }
 
   const Snapshot* GetSnapshot() const override {
-    return snapshot_ ? snapshot_->snapshot() : nullptr;
+    return snapshot_ ? snapshot_.get() : nullptr;
   }
 
   void SetSnapshot() override;
+  void SetSnapshotOnNextOperation(
+      std::shared_ptr<TransactionNotifier> notifier = nullptr) override;
+
+  void ClearSnapshot() override {
+    snapshot_.reset();
+    snapshot_needed_ = false;
+    snapshot_notifier_ = nullptr;
+  }
+
+  void DisableIndexing() override { indexing_enabled_ = false; }
+
+  void EnableIndexing() override { indexing_enabled_ = true; }
 
   uint64_t GetElapsedTime() const override;
 
@@ -184,6 +196,15 @@ class TransactionBaseImpl : public Transaction {
   // with writes in other transactions.
   const TransactionKeyMap& GetTrackedKeys() const { return tracked_keys_; }
 
+  const WriteOptions* GetWriteOptions() override { return &write_options_; }
+
+  void SetWriteOptions(const WriteOptions& write_options) override {
+    write_options_ = write_options;
+  }
+
+  // Used for memory management for snapshot_
+  void ReleaseSnapshot(const Snapshot* snapshot, DB* db);
+
  protected:
   // Add a key to the list of tracked keys.
   // seqno is the earliest seqno this key was involved with this transaction.
@@ -191,21 +212,21 @@ class TransactionBaseImpl : public Transaction {
 
   const TransactionKeyMap* GetTrackedKeysSinceSavePoint();
 
+  // Sets a snapshot if SetSnapshotOnNextOperation() has been called.
+  void SetSnapshotIfNeeded();
+
   DB* const db_;
 
-  const WriteOptions write_options_;
+  WriteOptions write_options_;
 
   const Comparator* cmp_;
-
-  // Records writes pending in this transaction
-  std::unique_ptr<WriteBatchWithIndex> write_batch_;
 
   // Stores that time the txn was constructed, in microseconds.
   const uint64_t start_time_;
 
   // Stores the current snapshot that was was set by SetSnapshot or null if
   // no snapshot is currently set.
-  std::shared_ptr<ManagedSnapshot> snapshot_;
+  std::shared_ptr<const Snapshot> snapshot_;
 
   // Count of various operations pending in this transaction
   uint64_t num_puts_ = 0;
@@ -213,7 +234,9 @@ class TransactionBaseImpl : public Transaction {
   uint64_t num_merges_ = 0;
 
   struct SavePoint {
-    std::shared_ptr<ManagedSnapshot> snapshot_;
+    std::shared_ptr<const Snapshot> snapshot_;
+    bool snapshot_needed_;
+    std::shared_ptr<TransactionNotifier> snapshot_notifier_;
     uint64_t num_puts_;
     uint64_t num_deletes_;
     uint64_t num_merges_;
@@ -221,15 +244,21 @@ class TransactionBaseImpl : public Transaction {
     // Record all keys tracked since the last savepoint
     TransactionKeyMap new_keys_;
 
-    SavePoint(std::shared_ptr<ManagedSnapshot> snapshot, uint64_t num_puts,
-              uint64_t num_deletes, uint64_t num_merges)
+    SavePoint(std::shared_ptr<const Snapshot> snapshot, bool snapshot_needed,
+              std::shared_ptr<TransactionNotifier> snapshot_notifier,
+              uint64_t num_puts, uint64_t num_deletes, uint64_t num_merges)
         : snapshot_(snapshot),
+          snapshot_needed_(snapshot_needed),
+          snapshot_notifier_(snapshot_notifier),
           num_puts_(num_puts),
           num_deletes_(num_deletes),
           num_merges_(num_merges) {}
   };
 
  private:
+  // Records writes pending in this transaction
+  WriteBatchWithIndex write_batch_;
+
   // Stack of the Snapshot saved at each save point.  Saved snapshots may be
   // nullptr if there was no snapshot at the time SetSavePoint() was called.
   std::unique_ptr<std::stack<TransactionBaseImpl::SavePoint>> save_points_;
@@ -241,8 +270,24 @@ class TransactionBaseImpl : public Transaction {
   // Optimistic Transactions will wait till commit time to do conflict checking.
   TransactionKeyMap tracked_keys_;
 
+  // If true, future Put/Merge/Deletes will be indexed in the
+  // WriteBatchWithIndex.
+  // If false, future Put/Merge/Deletes will be inserted directly into the
+  // underlying WriteBatch and not indexed in the WriteBatchWithIndex.
+  bool indexing_enabled_ = true;
+
+  // SetSnapshotOnNextOperation() has been called and the snapshot has not yet
+  // been reset.
+  bool snapshot_needed_ = false;
+
+  // SetSnapshotOnNextOperation() has been called and the caller would like
+  // a notification through the TransactionNotifier interface
+  std::shared_ptr<TransactionNotifier> snapshot_notifier_ = nullptr;
+
   Status TryLock(ColumnFamilyHandle* column_family, const SliceParts& key,
                  bool untracked = false);
+
+  WriteBatchBase* GetBatchForWrite();
 };
 
 }  // namespace rocksdb

@@ -19,6 +19,7 @@ class Arena;
 struct ReadOptions;
 struct TableProperties;
 class GetContext;
+class InternalIterator;
 
 // A Table is a sorted map from strings to strings.  Tables are
 // immutable and persistent.  A Table may be safely accessed from
@@ -34,7 +35,11 @@ class TableReader {
   //        When destroying the iterator, the caller will not call "delete"
   //        but Iterator::~Iterator() directly. The destructor needs to destroy
   //        all the states but those allocated in arena.
-  virtual Iterator* NewIterator(const ReadOptions&, Arena* arena = nullptr) = 0;
+  // skip_filters: disables checking the bloom filters even if they exist. This
+  //               option is effective only for block-based table format.
+  virtual InternalIterator* NewIterator(const ReadOptions&,
+                                        Arena* arena = nullptr,
+                                        bool skip_filters = false) = 0;
 
   // Given a key, return an approximate byte offset in the file where
   // the data for that key begins (or would begin if the key were
@@ -65,8 +70,10 @@ class TableReader {
   //
   // readOptions is the options for the read
   // key is the key to search for
+  // skip_filters: disables checking the bloom filters even if they exist. This
+  //               option is effective only for block-based table format.
   virtual Status Get(const ReadOptions& readOptions, const Slice& key,
-                     GetContext* get_context) = 0;
+                     GetContext* get_context, bool skip_filters = false) = 0;
 
   // Prefetch data corresponding to a give range of keys
   // Typically this functionality is required for table implementations that

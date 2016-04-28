@@ -5,6 +5,7 @@
 //
 #include <algorithm>
 #include <iostream>
+#include <thread>
 #include <vector>
 
 #include "rocksdb/db.h"
@@ -12,6 +13,7 @@
 #include "rocksdb/slice_transform.h"
 #include "rocksdb/memtablerep.h"
 #include "util/histogram.h"
+#include "util/instrumented_mutex.h"
 #include "util/stop_watch.h"
 #include "util/testharness.h"
 #include "util/thread_status_util.h"
@@ -444,6 +446,7 @@ void ProfileQueries(bool enabled_time = false) {
   }
 }
 
+#ifndef ROCKSDB_LITE
 TEST_F(PerfContextTest, KeyComparisonCount) {
   SetPerfLevel(kEnableCount);
   ProfileQueries();
@@ -454,6 +457,7 @@ TEST_F(PerfContextTest, KeyComparisonCount) {
   SetPerfLevel(kEnableTime);
   ProfileQueries(true);
 }
+#endif  // ROCKSDB_LITE
 
 // make perf_context_test
 // export ROCKSDB_TESTS=PerfContextTest.SeekKeyComparison
@@ -539,6 +543,65 @@ TEST_F(PerfContextTest, SeekKeyComparison) {
   }
 }
 
+TEST_F(PerfContextTest, DBMutexLockCounter) {
+  int stats_code[] = {0, static_cast<int>(DB_MUTEX_WAIT_MICROS)};
+  for (PerfLevel perf_level :
+       {PerfLevel::kEnableTimeExceptForMutex, PerfLevel::kEnableTime}) {
+    for (int c = 0; c < 2; ++c) {
+    InstrumentedMutex mutex(nullptr, Env::Default(), stats_code[c]);
+    mutex.Lock();
+    std::thread child_thread([&] {
+      SetPerfLevel(perf_level);
+      perf_context.Reset();
+      ASSERT_EQ(perf_context.db_mutex_lock_nanos, 0);
+      mutex.Lock();
+      mutex.Unlock();
+      if (perf_level == PerfLevel::kEnableTimeExceptForMutex ||
+          stats_code[c] != DB_MUTEX_WAIT_MICROS) {
+        ASSERT_EQ(perf_context.db_mutex_lock_nanos, 0);
+      } else {
+        // increment the counter only when it's a DB Mutex
+        ASSERT_GT(perf_context.db_mutex_lock_nanos, 0);
+      }
+    });
+    Env::Default()->SleepForMicroseconds(100);
+    mutex.Unlock();
+    child_thread.join();
+  }
+  }
+}
+
+TEST_F(PerfContextTest, FalseDBMutexWait) {
+  SetPerfLevel(kEnableTime);
+  int stats_code[] = {0, static_cast<int>(DB_MUTEX_WAIT_MICROS)};
+  for (int c = 0; c < 2; ++c) {
+    InstrumentedMutex mutex(nullptr, Env::Default(), stats_code[c]);
+    InstrumentedCondVar lock(&mutex);
+    perf_context.Reset();
+    mutex.Lock();
+    lock.TimedWait(100);
+    mutex.Unlock();
+    if (stats_code[c] == static_cast<int>(DB_MUTEX_WAIT_MICROS)) {
+      // increment the counter only when it's a DB Mutex
+      ASSERT_GT(perf_context.db_condition_wait_nanos, 0);
+    } else {
+      ASSERT_EQ(perf_context.db_condition_wait_nanos, 0);
+    }
+  }
+}
+
+TEST_F(PerfContextTest, ToString) {
+  perf_context.Reset();
+  perf_context.block_read_count = 12345;
+
+  std::string zero_included = perf_context.ToString();
+  ASSERT_NE(std::string::npos, zero_included.find("= 0"));
+  ASSERT_NE(std::string::npos, zero_included.find("= 12345"));
+
+  std::string zero_excluded = perf_context.ToString(true);
+  ASSERT_EQ(std::string::npos, zero_excluded.find("= 0"));
+  ASSERT_NE(std::string::npos, zero_excluded.find("= 12345"));
+}
 }
 
 int main(int argc, char** argv) {

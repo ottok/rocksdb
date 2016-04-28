@@ -113,15 +113,17 @@ class IndexBuilder {
 //
 // Optimizations:
 //  1. Made block's `block_restart_interval` to be 1, which will avoid linear
-//     search when doing index lookup.
+//     search when doing index lookup (can be disabled by setting
+//     index_block_restart_interval).
 //  2. Shorten the key length for index block. Other than honestly using the
 //     last key in the data block as the index key, we instead find a shortest
 //     substitute key that serves the same function.
 class ShortenedIndexBuilder : public IndexBuilder {
  public:
-  explicit ShortenedIndexBuilder(const Comparator* comparator)
+  explicit ShortenedIndexBuilder(const Comparator* comparator,
+                                 int index_block_restart_interval)
       : IndexBuilder(comparator),
-        index_block_builder_(1 /* block_restart_interval == 1 */) {}
+        index_block_builder_(index_block_restart_interval) {}
 
   virtual void AddIndexEntry(std::string* last_key_in_current_block,
                              const Slice* first_key_in_next_block,
@@ -178,9 +180,10 @@ class ShortenedIndexBuilder : public IndexBuilder {
 class HashIndexBuilder : public IndexBuilder {
  public:
   explicit HashIndexBuilder(const Comparator* comparator,
-                            const SliceTransform* hash_key_extractor)
+                            const SliceTransform* hash_key_extractor,
+                            int index_block_restart_interval)
       : IndexBuilder(comparator),
-        primary_index_builder_(comparator),
+        primary_index_builder_(comparator, index_block_restart_interval),
         hash_key_extractor_(hash_key_extractor) {}
 
   virtual void AddIndexEntry(std::string* last_key_in_current_block,
@@ -266,13 +269,16 @@ namespace {
 
 // Create a index builder based on its type.
 IndexBuilder* CreateIndexBuilder(IndexType type, const Comparator* comparator,
-                                 const SliceTransform* prefix_extractor) {
+                                 const SliceTransform* prefix_extractor,
+                                 int index_block_restart_interval) {
   switch (type) {
     case BlockBasedTableOptions::kBinarySearch: {
-      return new ShortenedIndexBuilder(comparator);
+      return new ShortenedIndexBuilder(comparator,
+                                       index_block_restart_interval);
     }
     case BlockBasedTableOptions::kHashSearch: {
-      return new HashIndexBuilder(comparator, prefix_extractor);
+      return new HashIndexBuilder(comparator, prefix_extractor,
+                                  index_block_restart_interval);
     }
     default: {
       assert(!"Do not recognize the index type ");
@@ -474,17 +480,20 @@ struct BlockBasedTableBuilder::Rep {
       const InternalKeyComparator& icomparator,
       const std::vector<std::unique_ptr<IntTblPropCollectorFactory>>*
           int_tbl_prop_collector_factories,
-      WritableFileWriter* f, const CompressionType _compression_type,
+      uint32_t column_family_id, WritableFileWriter* f,
+      const CompressionType _compression_type,
       const CompressionOptions& _compression_opts, const bool skip_filters)
       : ioptions(_ioptions),
         table_options(table_opt),
         internal_comparator(icomparator),
         file(f),
-        data_block(table_options.block_restart_interval),
+        data_block(table_options.block_restart_interval,
+                   table_options.use_delta_encoding),
         internal_prefix_transform(_ioptions.prefix_extractor),
-        index_builder(CreateIndexBuilder(table_options.index_type,
-                                         &internal_comparator,
-                                         &this->internal_prefix_transform)),
+        index_builder(
+            CreateIndexBuilder(table_options.index_type, &internal_comparator,
+                               &this->internal_prefix_transform,
+                               table_options.index_block_restart_interval)),
         compression_type(_compression_type),
         compression_opts(_compression_opts),
         filter_block(skip_filters ? nullptr : CreateFilterBlockBuilder(
@@ -494,7 +503,7 @@ struct BlockBasedTableBuilder::Rep {
                 table_options, data_block)) {
     for (auto& collector_factories : *int_tbl_prop_collector_factories) {
       table_properties_collectors.emplace_back(
-          collector_factories->CreateIntTblPropCollector());
+          collector_factories->CreateIntTblPropCollector(column_family_id));
     }
     table_properties_collectors.emplace_back(
         new BlockBasedTablePropertiesCollector(
@@ -509,7 +518,8 @@ BlockBasedTableBuilder::BlockBasedTableBuilder(
     const InternalKeyComparator& internal_comparator,
     const std::vector<std::unique_ptr<IntTblPropCollectorFactory>>*
         int_tbl_prop_collector_factories,
-    WritableFileWriter* file, const CompressionType compression_type,
+    uint32_t column_family_id, WritableFileWriter* file,
+    const CompressionType compression_type,
     const CompressionOptions& compression_opts, const bool skip_filters) {
   BlockBasedTableOptions sanitized_table_options(table_options);
   if (sanitized_table_options.format_version == 0 &&
@@ -523,8 +533,8 @@ BlockBasedTableBuilder::BlockBasedTableBuilder(
   }
 
   rep_ = new Rep(ioptions, sanitized_table_options, internal_comparator,
-                 int_tbl_prop_collector_factories, file, compression_type,
-                 compression_opts, skip_filters);
+                 int_tbl_prop_collector_factories, column_family_id, file,
+                 compression_type, compression_opts, skip_filters);
 
   if (rep_->filter_block != nullptr) {
     rep_->filter_block->StartBlock(0);
@@ -590,7 +600,7 @@ void BlockBasedTableBuilder::Flush() {
   if (!ok()) return;
   if (r->data_block.empty()) return;
   WriteBlock(&r->data_block, &r->pending_handle);
-  if (ok()) {
+  if (ok() && !r->table_options.skip_table_builder_flush) {
     r->status = r->file->Flush();
   }
   if (r->filter_block != nullptr) {
@@ -871,8 +881,9 @@ TableProperties BlockBasedTableBuilder::GetTableProperties() const {
   TableProperties ret = rep_->props;
   for (const auto& collector : rep_->table_properties_collectors) {
     for (const auto& prop : collector->GetReadableProperties()) {
-      ret.user_collected_properties.insert(prop);
+      ret.readable_properties.insert(prop);
     }
+    collector->Finish(&ret.user_collected_properties);
   }
   return ret;
 }

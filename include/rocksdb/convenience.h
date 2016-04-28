@@ -7,6 +7,7 @@
 
 #include <unordered_map>
 #include <string>
+#include "rocksdb/db.h"
 #include "rocksdb/options.h"
 #include "rocksdb/table.h"
 
@@ -40,7 +41,14 @@ Status GetDBOptionsFromMap(
 Status GetBlockBasedTableOptionsFromMap(
     const BlockBasedTableOptions& table_options,
     const std::unordered_map<std::string, std::string>& opts_map,
-    BlockBasedTableOptions* new_table_options);
+    BlockBasedTableOptions* new_table_options,
+    bool input_strings_escaped = false);
+
+Status GetPlainTableOptionsFromMap(
+    const PlainTableOptions& table_options,
+    const std::unordered_map<std::string, std::string>& opts_map,
+    PlainTableOptions* new_table_options,
+    bool input_strings_escaped = false);
 
 // Take a string representation of option names and  values, apply them into the
 // base_options, and return the new options as a result. The string has the
@@ -73,11 +81,27 @@ Status GetBlockBasedTableOptionsFromString(
     const std::string& opts_str,
     BlockBasedTableOptions* new_table_options);
 
+Status GetPlainTableOptionsFromString(
+    const PlainTableOptions& table_options,
+    const std::string& opts_str,
+    PlainTableOptions* new_table_options);
+
+Status GetMemTableRepFactoryFromString(
+    const std::string& opts_str,
+    std::unique_ptr<MemTableRepFactory>* new_mem_factory);
+
 Status GetOptionsFromString(const Options& base_options,
                             const std::string& opts_str, Options* new_options);
 
-/// Request stopping background work, if wait is true wait until it's done
+// Request stopping background work, if wait is true wait until it's done
 void CancelAllBackgroundWork(DB* db, bool wait = false);
+
+// Delete files which are entirely in the given range
+// Could leave some keys in the range which are in files which are not
+// entirely in the range.
+// Snapshots before the delete might not see the data in the given range.
+Status DeleteFilesInRange(DB* db, ColumnFamilyHandle* column_family,
+                          const Slice* begin, const Slice* end);
 #endif  // ROCKSDB_LITE
 
 }  // namespace rocksdb

@@ -8,10 +8,11 @@
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
 #pragma once
-#include <string>
-#include <memory>
-#include <functional>
+#include <atomic>
 #include <deque>
+#include <functional>
+#include <memory>
+#include <string>
 #include <vector>
 #include "db/dbformat.h"
 #include "db/skiplist.h"
@@ -21,8 +22,9 @@
 #include "rocksdb/memtablerep.h"
 #include "rocksdb/immutable_options.h"
 #include "db/memtable_allocator.h"
-#include "util/arena.h"
+#include "util/concurrent_arena.h"
 #include "util/dynamic_bloom.h"
+#include "util/instrumented_mutex.h"
 #include "util/mutable_cf_options.h"
 
 namespace rocksdb {
@@ -31,6 +33,7 @@ class Mutex;
 class MemTableIterator;
 class MergeContext;
 class WriteBuffer;
+class InternalIterator;
 
 struct MemTableOptions {
   explicit MemTableOptions(
@@ -123,10 +126,17 @@ class MemTable {
   // This method heuristically determines if the memtable should continue to
   // host more data.
   bool ShouldScheduleFlush() const {
-    return flush_scheduled_ == false && should_flush_;
+    return flush_state_.load(std::memory_order_relaxed) == FLUSH_REQUESTED;
   }
 
-  void MarkFlushScheduled() { flush_scheduled_ = true; }
+  // Returns true if a flush should be scheduled and the caller should
+  // be the one to schedule it
+  bool MarkFlushScheduled() {
+    auto before = FLUSH_REQUESTED;
+    return flush_state_.compare_exchange_strong(before, FLUSH_SCHEDULED,
+                                                std::memory_order_relaxed,
+                                                std::memory_order_relaxed);
+  }
 
   // Return an iterator that yields the contents of the memtable.
   //
@@ -140,17 +150,16 @@ class MemTable {
   // arena: If not null, the arena needs to be used to allocate the Iterator.
   //        Calling ~Iterator of the iterator will destroy all the states but
   //        those allocated in arena.
-  Iterator* NewIterator(const ReadOptions& read_options, Arena* arena);
+  InternalIterator* NewIterator(const ReadOptions& read_options, Arena* arena);
 
   // Add an entry into memtable that maps key to value at the
   // specified sequence number and with the specified type.
   // Typically value will be empty if type==kTypeDeletion.
   //
-  // REQUIRES: external synchronization to prevent simultaneous
-  // operations on the same MemTable.
-  void Add(SequenceNumber seq, ValueType type,
-           const Slice& key,
-           const Slice& value);
+  // REQUIRES: if allow_concurrent = false, external synchronization to prevent
+  // simultaneous operations on the same MemTable.
+  void Add(SequenceNumber seq, ValueType type, const Slice& key,
+           const Slice& value, bool allow_concurrent = false);
 
   // If memtable contains a value for key, store it in *value and return true.
   // If memtable contains a deletion for key, store a NotFound() error
@@ -188,7 +197,7 @@ class MemTable {
               const Slice& key,
               const Slice& value);
 
-  // If prev_value for key exits, attempts to update it inplace.
+  // If prev_value for key exists, attempts to update it inplace.
   // else returns false
   // Pseudocode
   //   if key exists in current memtable && prev_value is of type kTypeValue
@@ -219,7 +228,9 @@ class MemTable {
   // Get total number of deletes in the mem table.
   // REQUIRES: external synchronization to prevent simultaneous
   // operations on the same MemTable (unless this Memtable is immutable).
-  uint64_t num_deletes() const { return num_deletes_; }
+  uint64_t num_deletes() const {
+    return num_deletes_.load(std::memory_order_relaxed);
+  }
 
   // Returns the edits area that is needed for flushing the memtable
   VersionEdit* GetEdits() { return &edit_; }
@@ -233,7 +244,9 @@ class MemTable {
   // into the memtable.
   // REQUIRES: external synchronization to prevent simultaneous
   // operations on the same MemTable (unless this Memtable is immutable).
-  SequenceNumber GetFirstSequenceNumber() { return first_seqno_; }
+  SequenceNumber GetFirstSequenceNumber() {
+    return first_seqno_.load(std::memory_order_relaxed);
+  }
 
   // Returns the sequence number that is guaranteed to be smaller than or equal
   // to the sequence number of any key that could be inserted into this
@@ -242,7 +255,9 @@ class MemTable {
   //
   // If the earliest sequence number could not be determined,
   // kMaxSequenceNumber will be returned.
-  SequenceNumber GetEarliestSequenceNumber() { return earliest_seqno_; }
+  SequenceNumber GetEarliestSequenceNumber() {
+    return earliest_seqno_.load(std::memory_order_relaxed);
+  }
 
   // Returns the next active logfile number when this memtable is about to
   // be flushed to storage
@@ -289,8 +304,7 @@ class MemTable {
   const MemTableOptions* GetMemTableOptions() const { return &moptions_; }
 
  private:
-  // Dynamically check if we can add more incoming entries
-  bool ShouldFlushNow() const;
+  enum FlushStateEnum { FLUSH_NOT_REQUESTED, FLUSH_REQUESTED, FLUSH_SCHEDULED };
 
   friend class MemTableIterator;
   friend class MemTableBackwardIterator;
@@ -300,14 +314,14 @@ class MemTable {
   const MemTableOptions moptions_;
   int refs_;
   const size_t kArenaBlockSize;
-  Arena arena_;
+  ConcurrentArena arena_;
   MemTableAllocator allocator_;
   unique_ptr<MemTableRep> table_;
 
   // Total data size of all data inserted
   std::atomic<uint64_t> data_size_;
   std::atomic<uint64_t> num_entries_;
-  uint64_t num_deletes_;
+  std::atomic<uint64_t> num_deletes_;
 
   // These are used to manage memtable flushes to storage
   bool flush_in_progress_; // started the flush
@@ -319,11 +333,11 @@ class MemTable {
   VersionEdit edit_;
 
   // The sequence number of the kv that was inserted first
-  SequenceNumber first_seqno_;
+  std::atomic<SequenceNumber> first_seqno_;
 
   // The db sequence number at the time of creation or kMaxSequenceNumber
   // if not set.
-  SequenceNumber earliest_seqno_;
+  std::atomic<SequenceNumber> earliest_seqno_;
 
   // The log files earlier than this number can be deleted.
   uint64_t mem_next_logfile_number_;
@@ -331,19 +345,22 @@ class MemTable {
   // rw locks for inplace updates
   std::vector<port::RWMutex> locks_;
 
-  // No copying allowed
-  MemTable(const MemTable&);
-  void operator=(const MemTable&);
-
   const SliceTransform* const prefix_extractor_;
   std::unique_ptr<DynamicBloom> prefix_bloom_;
 
-  // a flag indicating if a memtable has met the criteria to flush
-  bool should_flush_;
+  std::atomic<FlushStateEnum> flush_state_;
 
-  // a flag indicating if flush has been scheduled
-  bool flush_scheduled_;
   Env* env_;
+
+  // Returns a heuristic flush decision
+  bool ShouldFlushNow() const;
+
+  // Updates flush_state_ using ShouldFlushNow()
+  void UpdateFlushState();
+
+  // No copying allowed
+  MemTable(const MemTable&);
+  MemTable& operator=(const MemTable&);
 };
 
 extern const char* EncodeKey(std::string* scratch, const Slice& target);

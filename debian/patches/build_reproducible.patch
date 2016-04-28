@@ -1,0 +1,18 @@
+diff --git a/Makefile b/Makefile
+index a98aa5b..e58088d 100644
+--- a/Makefile
++++ b/Makefile
+@@ -201,7 +201,12 @@ CXXFLAGS += $(WARNING_FLAGS) -I. -I./include $(PLATFORM_CXXFLAGS) $(OPT) -Woverl
+ 
+ LDFLAGS += $(PLATFORM_LDFLAGS)
+ 
+-date := $(shell date +%F)
++DATE_FMT = %Y-%m-%d
++ifdef SOURCE_DATE_EPOCH
++    date ?= $(shell date -u -d "@$(SOURCE_DATE_EPOCH)" "+$(DATE_FMT)"  2>/dev/null || date -u -r "$(SOURCE_DATE_EPOCH)" "+$(DATE_FMT)" 2>/dev/null || date -u "+$(DATE_FMT)")
++else
++    date ?= $(shell date "+$(DATE_FMT)")
++endif
+ ifdef FORCE_GIT_SHA
+ 	git_sha := $(FORCE_GIT_SHA)
+ else

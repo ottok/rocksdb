@@ -1,2 +1,4 @@
 install_dir-is-destdir.patch
-unused_variable.patch
+fix_FTBFS.patch
+fix_gtest_unused_variable.patch
+build_reproducible.patch

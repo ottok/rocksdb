@@ -1,3 +1,14 @@
+rocksdb (4.5.1-1) unstable; urgency=low
+
+  * New upstream release.
+  * Build portable binaries (closes: #814132).
+  * Limit building to Linux 64 bit archs (closes: #814135).
+  * Tighten g++ build dependency to 4.8 and onwards (closes: #819063).
+  * Update library symbols, but disable it for now.
+  * Update Standards-Version to 3.9.8 .
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Thu, 28 Apr 2016 18:25:31 +0000
+
 rocksdb (4.1-1) unstable; urgency=low
 
   * Initial upload (closes: #793491).

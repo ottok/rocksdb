@@ -17,6 +17,7 @@
 #include <vector>
 #include "rocksdb/iterator.h"
 #include "rocksdb/table.h"
+#include "table/internal_iterator.h"
 #include "table/meta_blocks.h"
 #include "table/cuckoo_table_factory.h"
 #include "table/get_context.h"
@@ -127,7 +128,7 @@ CuckooTableReader::CuckooTableReader(
 }
 
 Status CuckooTableReader::Get(const ReadOptions& readOptions, const Slice& key,
-                              GetContext* get_context) {
+                              GetContext* get_context, bool skip_filters) {
   assert(key.size() == key_length_ + (is_last_level_ ? 8 : 0));
   Slice user_key = ExtractUserKey(key);
   for (uint32_t hash_cnt = 0; hash_cnt < num_hash_func_; ++hash_cnt) {
@@ -142,11 +143,16 @@ Status CuckooTableReader::Get(const ReadOptions& readOptions, const Slice& key,
         return Status::OK();
       }
       // Here, we compare only the user key part as we support only one entry
-      // per user key and we don't support sanpshot.
+      // per user key and we don't support snapshot.
       if (ucomp_->Equal(user_key, Slice(bucket, user_key.size()))) {
         Slice value(bucket + key_length_, value_length_);
         if (is_last_level_) {
-          get_context->SaveValue(value);
+          // Sequence number is not stored at the last level, so we will use
+          // kMaxSequenceNumber since it is unknown.  This could cause some
+          // transactions to fail to lock a key due to known sequence number.
+          // However, it is expected for anyone to use a CuckooTable in a
+          // TransactionDB.
+          get_context->SaveValue(value, kMaxSequenceNumber);
         } else {
           Slice full_key(bucket, key_length_);
           ParsedInternalKey found_ikey;
@@ -173,7 +179,7 @@ void CuckooTableReader::Prepare(const Slice& key) {
   }
 }
 
-class CuckooTableIterator : public Iterator {
+class CuckooTableIterator : public InternalIterator {
  public:
   explicit CuckooTableIterator(CuckooTableReader* reader);
   ~CuckooTableIterator() {}
@@ -348,16 +354,17 @@ Slice CuckooTableIterator::value() const {
   return curr_value_;
 }
 
-extern Iterator* NewErrorIterator(const Status& status, Arena* arena);
+extern InternalIterator* NewErrorInternalIterator(const Status& status,
+                                                  Arena* arena);
 
-Iterator* CuckooTableReader::NewIterator(
-    const ReadOptions& read_options, Arena* arena) {
+InternalIterator* CuckooTableReader::NewIterator(
+    const ReadOptions& read_options, Arena* arena, bool skip_filters) {
   if (!status().ok()) {
-    return NewErrorIterator(
+    return NewErrorInternalIterator(
         Status::Corruption("CuckooTableReader status is not okay."), arena);
   }
   if (read_options.total_order_seek) {
-    return NewErrorIterator(
+    return NewErrorInternalIterator(
         Status::InvalidArgument("total_order_seek is not supported."), arena);
   }
   CuckooTableIterator* iter;

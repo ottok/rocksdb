@@ -1,0 +1,17 @@
+Description: add cmath header to prevent FTBFS
+ Uses log() and other functions from the header.
+Author: Laszlo Boszormenyi (GCS) <gcs@debian.org>
+Last-Update: 2016-05-08
+
+---
+
+--- rocksdb-4.5.1.orig/util/options_builder.cc
++++ rocksdb-4.5.1/util/options_builder.cc
+@@ -4,6 +4,7 @@
+ //  of patent rights can be found in the PATENTS file in the same directory.
+ 
+ #include <math.h>
++#include <cmath>
+ #include <algorithm>
+ #include "rocksdb/options.h"
+ 
