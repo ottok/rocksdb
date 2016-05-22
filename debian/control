@@ -36,6 +36,8 @@ Description: persistent Key-Value Store for Flash and RAM Storage (development)
 
 Package: librocksdb4.5
 Architecture: amd64 arm64 ppc64el mips64el ppc64 sparc64
+Conflicts: librocksdb4.1
+Replaces: librocksdb4.1
 Depends: ${misc:Depends}, ${shlibs:Depends}
 Description: persistent Key-Value Store for Flash and RAM Storage
  C++ library providing an embedded key-value store, where keys and values are
@@ -62,6 +64,8 @@ Package: librocksdb4.5-dbg
 Architecture: amd64 arm64 ppc64el mips64el ppc64 sparc64
 Section: debug
 Priority: extra
+Conflicts: librocksdb4.1-dbg
+Replaces: librocksdb4.1-dbg
 Depends: ${misc:Depends}, librocksdb4.5 (= ${binary:Version})
 Description: persistent Key-Value Store for Flash and RAM Storage (debug-symbols)
  C++ library providing an embedded key-value store, where keys and values are

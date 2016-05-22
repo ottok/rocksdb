@@ -1,3 +1,10 @@
+rocksdb (4.5.1-2) unstable; urgency=low
+
+  * Conflict with and replace 4.1 version of library (closes: #824760).
+  * Don't use omit-leaf-frame-pointer compiler switch on mips64el and sparc64.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sun, 22 May 2016 16:18:51 +0000
+
 rocksdb (4.5.1-1) unstable; urgency=low
 
   * New upstream release.
