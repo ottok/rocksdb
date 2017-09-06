@@ -1,5 +1,2 @@
 install_dir-is-destdir.patch
-fix_FTBFS.patch
-fix_gtest_unused_variable.patch
 build_reproducible.patch
-mips64el_sparc64_compiler_switch.patch

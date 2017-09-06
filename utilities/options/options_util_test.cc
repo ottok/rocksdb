@@ -1,7 +1,7 @@
-//  Copyright (c) 2013, Facebook, Inc.  All rights reserved.
-//  This source code is licensed under the BSD-style license found in the
-//  LICENSE file in the root directory of this source tree. An additional grant
-//  of patent rights can be found in the PATENTS file in the same directory.
+//  Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
+//  This source code is licensed under both the GPLv2 (found in the
+//  COPYING file in the root directory) and Apache 2.0 License
+//  (found in the LICENSE.Apache file in the root directory).
 
 #ifndef ROCKSDB_LITE
 #ifndef __STDC_FORMAT_MACROS
@@ -13,10 +13,10 @@
 #include <cctype>
 #include <unordered_map>
 
+#include "options/options_parser.h"
 #include "rocksdb/db.h"
 #include "rocksdb/table.h"
 #include "rocksdb/utilities/options_util.h"
-#include "util/options_parser.h"
 #include "util/random.h"
 #include "util/testharness.h"
 #include "util/testutil.h"
@@ -105,7 +105,8 @@ class DummyTableFactory : public TableFactory {
   virtual Status NewTableReader(const TableReaderOptions& table_reader_options,
                                 unique_ptr<RandomAccessFileReader>&& file,
                                 uint64_t file_size,
-                                unique_ptr<TableReader>* table_reader) const {
+                                unique_ptr<TableReader>* table_reader,
+                                bool prefetch_index_and_filter_in_cache) const {
     return Status::NotSupported();
   }
 
@@ -128,19 +129,19 @@ class DummyMergeOperator : public MergeOperator {
   DummyMergeOperator() {}
   virtual ~DummyMergeOperator() {}
 
-  virtual bool FullMerge(const Slice& key, const Slice* existing_value,
-                         const std::deque<std::string>& operand_list,
-                         std::string* new_value, Logger* logger) const {
+  virtual bool FullMergeV2(const MergeOperationInput& merge_in,
+                           MergeOperationOutput* merge_out) const override {
     return false;
   }
 
   virtual bool PartialMergeMulti(const Slice& key,
                                  const std::deque<Slice>& operand_list,
-                                 std::string* new_value, Logger* logger) const {
+                                 std::string* new_value,
+                                 Logger* logger) const override {
     return false;
   }
 
-  virtual const char* Name() const { return "DummyMergeOperator"; }
+  virtual const char* Name() const override { return "DummyMergeOperator"; }
 };
 
 class DummySliceTransform : public SliceTransform {
@@ -173,8 +174,9 @@ TEST_F(OptionsUtilTest, SanityCheck) {
         (i == 0) ? kDefaultColumnFamilyName : test::RandomName(&rnd_, 10);
 
     cf_descs.back().options.table_factory.reset(NewBlockBasedTableFactory());
+    // Assign non-null values to prefix_extractors except the first cf.
     cf_descs.back().options.prefix_extractor.reset(
-        test::RandomSliceTransform(&rnd_));
+        i != 0 ? test::RandomSliceTransform(&rnd_) : nullptr);
     cf_descs.back().options.merge_operator.reset(
         test::RandomMergeOperator(&rnd_));
   }
@@ -223,16 +225,38 @@ TEST_F(OptionsUtilTest, SanityCheck) {
     std::shared_ptr<const SliceTransform> prefix_extractor =
         cf_descs[1].options.prefix_extractor;
 
+    // It's okay to set prefix_extractor to nullptr.
     ASSERT_NE(prefix_extractor, nullptr);
     cf_descs[1].options.prefix_extractor.reset();
-    ASSERT_NOK(
+    ASSERT_OK(
         CheckOptionsCompatibility(dbname_, Env::Default(), db_opt, cf_descs));
 
     cf_descs[1].options.prefix_extractor.reset(new DummySliceTransform());
-    ASSERT_NOK(
+    ASSERT_OK(
         CheckOptionsCompatibility(dbname_, Env::Default(), db_opt, cf_descs));
 
     cf_descs[1].options.prefix_extractor = prefix_extractor;
+    ASSERT_OK(
+        CheckOptionsCompatibility(dbname_, Env::Default(), db_opt, cf_descs));
+  }
+
+  // prefix extractor nullptr case
+  {
+    std::shared_ptr<const SliceTransform> prefix_extractor =
+        cf_descs[0].options.prefix_extractor;
+
+    // It's okay to set prefix_extractor to nullptr.
+    ASSERT_EQ(prefix_extractor, nullptr);
+    cf_descs[0].options.prefix_extractor.reset();
+    ASSERT_OK(
+        CheckOptionsCompatibility(dbname_, Env::Default(), db_opt, cf_descs));
+
+    // It's okay to change prefix_extractor from nullptr to non-nullptr
+    cf_descs[0].options.prefix_extractor.reset(new DummySliceTransform());
+    ASSERT_OK(
+        CheckOptionsCompatibility(dbname_, Env::Default(), db_opt, cf_descs));
+
+    cf_descs[0].options.prefix_extractor = prefix_extractor;
     ASSERT_OK(
         CheckOptionsCompatibility(dbname_, Env::Default(), db_opt, cf_descs));
   }

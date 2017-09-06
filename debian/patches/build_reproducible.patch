@@ -2,10 +2,10 @@ diff --git a/Makefile b/Makefile
 index a98aa5b..e58088d 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -201,7 +201,12 @@ CXXFLAGS += $(WARNING_FLAGS) -I. -I./include $(PLATFORM_CXXFLAGS) $(OPT) -Woverl
- 
- LDFLAGS += $(PLATFORM_LDFLAGS)
- 
+@@ -283,7 +283,12 @@ LDFLAGS += $(PLATFORM_LDFLAGS)
+ # If NO_UPDATE_BUILD_VERSION is set we don't update util/build_version.cc, but
+ # the file needs to already exist or else the build will fail
+ ifndef NO_UPDATE_BUILD_VERSION
 -date := $(shell date +%F)
 +DATE_FMT = %Y-%m-%d
 +ifdef SOURCE_DATE_EPOCH

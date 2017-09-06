@@ -1,7 +1,7 @@
-//  Copyright (c) 2015, Facebook, Inc.  All rights reserved.
-//  This source code is licensed under the BSD-style license found in the
-//  LICENSE file in the root directory of this source tree. An additional grant
-//  of patent rights can be found in the PATENTS file in the same directory.
+//  Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
+//  This source code is licensed under both the GPLv2 (found in the
+//  COPYING file in the root directory) and Apache 2.0 License
+//  (found in the LICENSE.Apache file in the root directory).
 
 #ifndef ROCKSDB_LITE
 
@@ -81,7 +81,7 @@ Status TransactionUtil::CheckKey(DBImpl* db_impl, SuperVersion* sv,
     if (cache_only) {
       // The age of this memtable is too new to use to check for recent
       // writes.
-      char msg[255];
+      char msg[300];
       snprintf(msg, sizeof(msg),
                "Transaction could not check for conflicts for operation at "
                "SequenceNumber %" PRIu64
@@ -137,7 +137,7 @@ Status TransactionUtil::CheckKeysForConflicts(DBImpl* db_impl,
     // written to this key since the start of the transaction.
     for (const auto& key_iter : keys) {
       const auto& key = key_iter.first;
-      const SequenceNumber key_seq = key_iter.second;
+      const SequenceNumber key_seq = key_iter.second.seq;
 
       result = CheckKey(db_impl, sv, earliest_seq, key_seq, key, cache_only);
 

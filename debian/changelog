@@ -1,3 +1,15 @@
+rocksdb (5.7.3-1) experimental; urgency=low
+
+  * New upstream release:
+    - builds with GCC 7 (closes: #853645).
+  * Remove unneeded build dependencies.
+  * Drop outdated patches.
+  * Update remaining patches.
+  * Library transition from librocksdb4.5 to librocksdb5.7 .
+  * Update Standards-Version to 4.0.0 and debhelper level to 10 .
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Wed, 06 Sep 2017 20:00:44 +0000
+
 rocksdb (4.5.1-2) unstable; urgency=low
 
   * Conflict with and replace 4.1 version of library (closes: #824760).

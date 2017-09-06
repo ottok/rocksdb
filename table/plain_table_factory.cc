@@ -17,7 +17,8 @@ namespace rocksdb {
 Status PlainTableFactory::NewTableReader(
     const TableReaderOptions& table_reader_options,
     unique_ptr<RandomAccessFileReader>&& file, uint64_t file_size,
-    unique_ptr<TableReader>* table) const {
+    unique_ptr<TableReader>* table,
+    bool prefetch_index_and_filter_in_cache) const {
   return PlainTableReader::Open(
       table_reader_options.ioptions, table_reader_options.env_options,
       table_reader_options.internal_comparator, std::move(file), file_size,
@@ -37,7 +38,8 @@ TableBuilder* PlainTableFactory::NewTableBuilder(
       table_builder_options.ioptions,
       table_builder_options.int_tbl_prop_collector_factories, column_family_id,
       file, table_options_.user_key_len, table_options_.encoding_type,
-      table_options_.index_sparseness, table_options_.bloom_bits_per_key, 6,
+      table_options_.index_sparseness, table_options_.bloom_bits_per_key,
+      table_builder_options.column_family_name, 6,
       table_options_.huge_page_tlb_size, table_options_.hash_table_ratio,
       table_options_.store_index_in_file);
 }
@@ -82,9 +84,6 @@ const PlainTableOptions& PlainTableFactory::table_options() const {
 extern TableFactory* NewPlainTableFactory(const PlainTableOptions& options) {
   return new PlainTableFactory(options);
 }
-
-const std::string PlainTablePropertyNames::kPrefixExtractorName =
-    "rocksdb.prefix.extractor.name";
 
 const std::string PlainTablePropertyNames::kEncodingType =
     "rocksdb.plain.table.encoding.type";

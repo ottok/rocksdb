@@ -53,7 +53,7 @@ function get_lib_base()
 }
 
 ###########################################################
-#                   4.9.x dependencies                    #
+#                   5.x dependencies                      #
 ###########################################################
 
 OUTPUT="$BASEDIR/dependencies.sh"
@@ -64,16 +64,16 @@ touch "$OUTPUT"
 echo "Writing dependencies to $OUTPUT"
 
 # Compilers locations
-GCC_BASE=`ls -d1 $TP2_LATEST/gcc/4.9.x/centos6-native/*/ | head -n1`
-CLANG_BASE=`ls -d1 $TP2_LATEST/clang/3.7.1/centos6-native/*/ | head -n1`
+GCC_BASE=`readlink -f $TP2_LATEST/gcc/5.x/centos6-native/*/`
+CLANG_BASE=`readlink -f $TP2_LATEST/llvm-fb/stable/centos6-native/*/`
 
 log_variable GCC_BASE
 log_variable CLANG_BASE
 
 # Libraries locations
-get_lib_base libgcc     4.9.x
-get_lib_base glibc      2.20 
-get_lib_base snappy     LATEST
+get_lib_base libgcc     5.x
+get_lib_base glibc      2.23
+get_lib_base snappy     LATEST gcc-5-glibc-2.23
 get_lib_base zlib       LATEST
 get_lib_base bzip2      LATEST
 get_lib_base lz4        LATEST
@@ -82,10 +82,12 @@ get_lib_base gflags     LATEST
 get_lib_base jemalloc   LATEST
 get_lib_base numa       LATEST
 get_lib_base libunwind  LATEST
+get_lib_base tbb        4.0_update2 gcc-5-glibc-2.23
 
 get_lib_base kernel-headers LATEST 
 get_lib_base binutils   LATEST centos6-native 
-get_lib_base valgrind   LATEST
+get_lib_base valgrind   3.10.0 gcc-5-glibc-2.23
+get_lib_base lua        5.2.3 gcc-5-glibc-2.23
 
 git diff $OUTPUT
 
@@ -101,8 +103,8 @@ touch "$OUTPUT"
 echo "Writing 4.8.1 dependencies to $OUTPUT"
 
 # Compilers locations
-GCC_BASE=`ls -d1 $TP2_LATEST/gcc/4.8.1/centos6-native/*/ | head -n1`
-CLANG_BASE=`ls -d1 $TP2_LATEST/clang/3.7.1/centos6-native/*/ | head -n1`
+GCC_BASE=`readlink -f $TP2_LATEST/gcc/4.8.1/centos6-native/*/`
+CLANG_BASE=`readlink -f $TP2_LATEST/llvm-fb/stable/centos6-native/*/`
 
 log_variable GCC_BASE
 log_variable CLANG_BASE
@@ -119,9 +121,11 @@ get_lib_base gflags     LATEST gcc-4.8.1-glibc-2.17
 get_lib_base jemalloc   LATEST gcc-4.8.1-glibc-2.17
 get_lib_base numa       LATEST gcc-4.8.1-glibc-2.17
 get_lib_base libunwind  LATEST gcc-4.8.1-glibc-2.17
+get_lib_base tbb        4.0_update2 gcc-4.8.1-glibc-2.17
 
 get_lib_base kernel-headers LATEST gcc-4.8.1-glibc-2.17 
 get_lib_base binutils   LATEST centos6-native 
 get_lib_base valgrind   3.8.1  gcc-4.8.1-glibc-2.17
+get_lib_base lua        5.2.3 centos6-native
 
 git diff $OUTPUT

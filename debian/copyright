@@ -41,7 +41,7 @@ Copyright: Copyright (C) 2013- Facebook, Inc.
 License: Apache-2.0
 
 Files: debian/*
-Copyright: Copyright (C) 2015 Laszlo Boszormenyi (GCS) <gcs@debian.org>
+Copyright: Copyright (C) 2015- Laszlo Boszormenyi (GCS) <gcs@debian.org>
 License: GPL-3+
 
 License: BSD-3-Clause

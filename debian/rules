@@ -13,6 +13,6 @@ override_dh_auto_install:
 	dh_auto_install --destdir=$(CURDIR)/debian/tmp/usr/
 
 %:
-	dh $@ --dbg-package=librocksdb4.5-dbg --parallel --fail-missing
+	dh $@ --dbg-package=librocksdb5.7-dbg --parallel --fail-missing
 
 .PHONY: override_dh_auto_build override_dh_auto_test override_dh_auto_install
