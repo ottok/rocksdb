@@ -1,3 +1,11 @@
+rocksdb (5.7.3-2) unstable; urgency=medium
+
+  * Upload to Sid.
+  * Update Standards-Version to 4.1.0:
+    - change librocksdb5.7-dbg priority to optional.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sat, 23 Sep 2017 15:29:14 +0000
+
 rocksdb (5.7.3-1) experimental; urgency=low
 
   * New upstream release:

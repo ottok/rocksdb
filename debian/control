@@ -3,7 +3,7 @@ Section: database
 Priority: optional
 Maintainer: Laszlo Boszormenyi (GCS) <gcs@debian.org>
 Build-Depends: debhelper (>= 10), libgflags-dev, libsnappy-dev, libbz2-dev, zlib1g-dev
-Standards-Version: 4.0.0
+Standards-Version: 4.1.0
 Homepage: http://rocksdb.org/
 
 Package: librocksdb-dev
@@ -35,6 +35,7 @@ Description: persistent Key-Value Store for Flash and RAM Storage (development)
  applications that use librocksdb .
 
 Package: librocksdb5.7
+Section: libs
 Architecture: amd64 arm64 ppc64el mips64el ppc64 sparc64
 Depends: ${misc:Depends}, ${shlibs:Depends}
 Description: persistent Key-Value Store for Flash and RAM Storage
@@ -61,7 +62,6 @@ Description: persistent Key-Value Store for Flash and RAM Storage
 Package: librocksdb5.7-dbg
 Architecture: amd64 arm64 ppc64el mips64el ppc64 sparc64
 Section: debug
-Priority: extra
 Depends: ${misc:Depends}, librocksdb5.7 (= ${binary:Version})
 Description: persistent Key-Value Store for Flash and RAM Storage (debug-symbols)
  C++ library providing an embedded key-value store, where keys and values are
