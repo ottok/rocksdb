@@ -1,3 +1,13 @@
+rocksdb (5.8-1) experimental; urgency=medium
+
+  * New upstream release:
+    - update copyright to dual GPLv2 or Apache 2.0 licenses.
+  * Library transition from librocksdb5.7 to librocksdb5.8 .
+  * Move librocksdb.so.5 to the -dev package.
+  * Update Standards-Version to 4.1.1 .
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sun, 01 Oct 2017 07:44:53 +0000
+
 rocksdb (5.7.3-2) unstable; urgency=medium
 
   * Upload to Sid.
