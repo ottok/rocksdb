@@ -1,4 +1,8 @@
 # Rocksdb Change Log
+## 5.8.7 (11/28/2017)
+### Bug Fixes
+* Fix IOError on WAL write doesn't propagate to write group follower
+
 ## 5.8.6 (11/20/2017)
 ### Bug Fixes
 * Fixed aligned_alloc issues with Windows.
