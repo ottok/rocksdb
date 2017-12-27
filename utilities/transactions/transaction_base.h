@@ -170,6 +170,12 @@ class TransactionBaseImpl : public Transaction {
     return DeleteUntracked(nullptr, key);
   }
 
+  Status SingleDeleteUntracked(ColumnFamilyHandle* column_family,
+                               const Slice& key) override;
+  Status SingleDeleteUntracked(const Slice& key) override {
+    return SingleDeleteUntracked(nullptr, key);
+  }
+
   void PutLogData(const Slice& blob) override;
 
   WriteBatchWithIndex* GetWriteBatch() override;
@@ -297,7 +303,8 @@ class TransactionBaseImpl : public Transaction {
   WriteBatchWithIndex write_batch_;
 
  private:
-  // batch to be written at commit time
+  // Extra data to be persisted with the commit. Note this is only used when
+  // prepare phase is not skipped.
   WriteBatch commit_time_batch_;
 
   // Stack of the Snapshot saved at each save point.  Saved snapshots may be

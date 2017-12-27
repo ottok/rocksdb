@@ -355,6 +355,14 @@ DEFINE_int32(compact_files_one_in, 0,
              "If non-zero, then CompactFiles() will be called one for every N "
              "operations IN AVERAGE.  0 indicates CompactFiles() is disabled.");
 
+DEFINE_int32(acquire_snapshot_one_in, 0,
+             "If non-zero, then acquires a snapshot once every N operations on "
+             "average.");
+
+DEFINE_uint64(snapshot_hold_ops, 0,
+              "If non-zero, then releases snapshots N operations after they're "
+              "acquired.");
+
 static bool ValidateInt32Percent(const char* flagname, int32_t value) {
   if (value < 0 || value>100) {
     fprintf(stderr, "Invalid value for --%s: %d, 0<= pct <=100 \n",
@@ -885,7 +893,7 @@ class SharedState {
 
   bool HasVerificationFailedYet() { return verification_failure_.load(); }
 
-  port::Mutex* GetMutexForKey(int cf, long key) {
+  port::Mutex* GetMutexForKey(int cf, int64_t key) {
     return key_locks_[cf][key >> log2_keys_per_lock_].get();
   }
 
@@ -977,6 +985,7 @@ struct ThreadState {
   Random rand;  // Has different seeds for different threads
   SharedState* shared;
   Stats stats;
+  std::queue<std::pair<uint64_t, const Snapshot*> > snapshot_queue;
 
   ThreadState(uint32_t index, SharedState* _shared)
       : tid(index), rand(1000 + index + _shared->GetSeed()), shared(_shared) {}
@@ -1657,6 +1666,10 @@ class StressTest {
         {
           thread->stats.FinishedSingleOp();
           MutexLock l(thread->shared->GetMutex());
+          while (!thread->snapshot_queue.empty()) {
+            db_->ReleaseSnapshot(thread->snapshot_queue.front().second);
+            thread->snapshot_queue.pop();
+          }
           thread->shared->IncVotedReopen();
           if (thread->shared->AllVotedReopen()) {
             thread->shared->GetStressTest()->Reopen();
@@ -1768,12 +1781,24 @@ class StressTest {
         }
       }
 #endif                // !ROCKSDB_LITE
+      if (FLAGS_acquire_snapshot_one_in > 0 &&
+          thread->rand.Uniform(FLAGS_acquire_snapshot_one_in) == 0) {
+        thread->snapshot_queue.emplace(
+            std::min(FLAGS_ops_per_thread - 1, i + FLAGS_snapshot_hold_ops),
+            db_->GetSnapshot());
+      }
+      if (!thread->snapshot_queue.empty()) {
+        while (i == thread->snapshot_queue.front().first) {
+          db_->ReleaseSnapshot(thread->snapshot_queue.front().second);
+          thread->snapshot_queue.pop();
+        }
+      }
 
       const double completed_ratio =
           static_cast<double>(i) / FLAGS_ops_per_thread;
       const int64_t base_key = static_cast<int64_t>(
           completed_ratio * (FLAGS_max_key - FLAGS_active_width));
-      long rand_key = base_key + thread->rand.Next() % FLAGS_active_width;
+      int64_t rand_key = base_key + thread->rand.Next() % FLAGS_active_width;
       int rand_column_family = thread->rand.Next() % FLAGS_column_families;
       std::string keystr = Key(rand_key);
       Slice key = keystr;
@@ -2422,15 +2447,15 @@ int main(int argc, char** argv) {
 #if !defined(NDEBUG) && !defined(OS_MACOSX) && !defined(OS_WIN) && \
   !defined(OS_SOLARIS) && !defined(OS_AIX)
   rocksdb::SyncPoint::GetInstance()->SetCallBack(
-    "NewWritableFile:O_DIRECT", [&](void* arg) {
-      int* val = static_cast<int*>(arg);
-      *val &= ~O_DIRECT;
-    });
+      "NewWritableFile:O_DIRECT", [&](void* arg) {
+        int* val = static_cast<int*>(arg);
+        *val &= ~O_DIRECT;
+      });
   rocksdb::SyncPoint::GetInstance()->SetCallBack(
-    "NewRandomAccessFile:O_DIRECT", [&](void* arg) {
-      int* val = static_cast<int*>(arg);
-      *val &= ~O_DIRECT;
-    });
+      "NewRandomAccessFile:O_DIRECT", [&](void* arg) {
+        int* val = static_cast<int*>(arg);
+        *val &= ~O_DIRECT;
+      });
   rocksdb::SyncPoint::GetInstance()->EnableProcessing();
 #endif
 

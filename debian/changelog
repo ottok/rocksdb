@@ -1,3 +1,13 @@
+rocksdb (5.9.2-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Library transition from librocksdb5.8 to librocksdb5.9 .
+  * Add tools package (closes: #885207).
+  * Add liblz4-dev and libzstd-dev to build dependencies for data compression
+    support.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Wed, 27 Dec 2017 11:00:10 +0000
+
 rocksdb (5.8.8-1) unstable; urgency=medium
 
   * New upstream release.

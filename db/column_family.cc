@@ -463,7 +463,8 @@ ColumnFamilyData::~ColumnFamilyData() {
   if (dummy_versions_ != nullptr) {
     // List must be empty
     assert(dummy_versions_->TEST_Next() == dummy_versions_);
-    bool deleted __attribute__((unused)) = dummy_versions_->Unref();
+    bool deleted __attribute__((unused));
+    deleted = dummy_versions_->Unref();
     assert(deleted);
   }
 
@@ -613,8 +614,9 @@ int GetL0ThresholdSpeedupCompaction(int level0_file_num_compaction_trigger,
 }
 }  // namespace
 
-void ColumnFamilyData::RecalculateWriteStallConditions(
+WriteStallCondition ColumnFamilyData::RecalculateWriteStallConditions(
       const MutableCFOptions& mutable_cf_options) {
+  auto write_stall_condition = WriteStallCondition::kNormal;
   if (current_ != nullptr) {
     auto* vstorage = current_->storage_info();
     auto write_controller = column_family_set_->write_controller_;
@@ -626,7 +628,8 @@ void ColumnFamilyData::RecalculateWriteStallConditions(
 
     if (imm()->NumNotFlushed() >= mutable_cf_options.max_write_buffer_number) {
       write_controller_token_ = write_controller->GetStopToken();
-      internal_stats_->AddCFStats(InternalStats::MEMTABLE_COMPACTION, 1);
+      internal_stats_->AddCFStats(InternalStats::MEMTABLE_LIMIT_STOPS, 1);
+      write_stall_condition = WriteStallCondition::kStopped;
       ROCKS_LOG_WARN(
           ioptions_.info_log,
           "[%s] Stopping writes because we have %d immutable memtables "
@@ -637,10 +640,11 @@ void ColumnFamilyData::RecalculateWriteStallConditions(
                vstorage->l0_delay_trigger_count() >=
                    mutable_cf_options.level0_stop_writes_trigger) {
       write_controller_token_ = write_controller->GetStopToken();
-      internal_stats_->AddCFStats(InternalStats::LEVEL0_NUM_FILES_TOTAL, 1);
+      internal_stats_->AddCFStats(InternalStats::L0_FILE_COUNT_LIMIT_STOPS, 1);
+      write_stall_condition = WriteStallCondition::kStopped;
       if (compaction_picker_->IsLevel0CompactionInProgress()) {
         internal_stats_->AddCFStats(
-            InternalStats::LEVEL0_NUM_FILES_WITH_COMPACTION, 1);
+            InternalStats::LOCKED_L0_FILE_COUNT_LIMIT_STOPS, 1);
       }
       ROCKS_LOG_WARN(ioptions_.info_log,
                      "[%s] Stopping writes because we have %d level-0 files",
@@ -651,7 +655,8 @@ void ColumnFamilyData::RecalculateWriteStallConditions(
                    mutable_cf_options.hard_pending_compaction_bytes_limit) {
       write_controller_token_ = write_controller->GetStopToken();
       internal_stats_->AddCFStats(
-          InternalStats::HARD_PENDING_COMPACTION_BYTES_LIMIT, 1);
+          InternalStats::PENDING_COMPACTION_BYTES_LIMIT_STOPS, 1);
+      write_stall_condition = WriteStallCondition::kStopped;
       ROCKS_LOG_WARN(
           ioptions_.info_log,
           "[%s] Stopping writes because of estimated pending compaction "
@@ -664,7 +669,8 @@ void ColumnFamilyData::RecalculateWriteStallConditions(
           SetupDelay(write_controller, compaction_needed_bytes,
                      prev_compaction_needed_bytes_, was_stopped,
                      mutable_cf_options.disable_auto_compactions);
-      internal_stats_->AddCFStats(InternalStats::MEMTABLE_SLOWDOWN, 1);
+      internal_stats_->AddCFStats(InternalStats::MEMTABLE_LIMIT_SLOWDOWNS, 1);
+      write_stall_condition = WriteStallCondition::kDelayed;
       ROCKS_LOG_WARN(
           ioptions_.info_log,
           "[%s] Stalling writes because we have %d immutable memtables "
@@ -684,10 +690,12 @@ void ColumnFamilyData::RecalculateWriteStallConditions(
           SetupDelay(write_controller, compaction_needed_bytes,
                      prev_compaction_needed_bytes_, was_stopped || near_stop,
                      mutable_cf_options.disable_auto_compactions);
-      internal_stats_->AddCFStats(InternalStats::LEVEL0_SLOWDOWN_TOTAL, 1);
+      internal_stats_->AddCFStats(InternalStats::L0_FILE_COUNT_LIMIT_SLOWDOWNS,
+                                  1);
+      write_stall_condition = WriteStallCondition::kDelayed;
       if (compaction_picker_->IsLevel0CompactionInProgress()) {
         internal_stats_->AddCFStats(
-            InternalStats::LEVEL0_SLOWDOWN_WITH_COMPACTION, 1);
+            InternalStats::LOCKED_L0_FILE_COUNT_LIMIT_SLOWDOWNS, 1);
       }
       ROCKS_LOG_WARN(ioptions_.info_log,
                      "[%s] Stalling writes because we have %d level-0 files "
@@ -714,7 +722,8 @@ void ColumnFamilyData::RecalculateWriteStallConditions(
                      prev_compaction_needed_bytes_, was_stopped || near_stop,
                      mutable_cf_options.disable_auto_compactions);
       internal_stats_->AddCFStats(
-          InternalStats::SOFT_PENDING_COMPACTION_BYTES_LIMIT, 1);
+          InternalStats::PENDING_COMPACTION_BYTES_LIMIT_SLOWDOWNS, 1);
+      write_stall_condition = WriteStallCondition::kDelayed;
       ROCKS_LOG_WARN(
           ioptions_.info_log,
           "[%s] Stalling writes because of estimated pending compaction "
@@ -769,6 +778,7 @@ void ColumnFamilyData::RecalculateWriteStallConditions(
     }
     prev_compaction_needed_bytes_ = compaction_needed_bytes;
   }
+  return write_stall_condition;
 }
 
 const EnvOptions* ColumnFamilyData::soptions() const {
@@ -845,6 +855,10 @@ SuperVersion* ColumnFamilyData::GetReferencedSuperVersion(
   sv = GetThreadLocalSuperVersion(db_mutex);
   sv->Ref();
   if (!ReturnThreadLocalSuperVersion(sv)) {
+    // This Unref() corresponds to the Ref() in GetThreadLocalSuperVersion()
+    // when the thread-local pointer was populated. So, the Ref() earlier in
+    // this function still prevents the returned SuperVersion* from being
+    // deleted out from under the caller.
     sv->Unref();
   }
   return sv;
@@ -914,15 +928,16 @@ bool ColumnFamilyData::ReturnThreadLocalSuperVersion(SuperVersion* sv) {
   return false;
 }
 
-SuperVersion* ColumnFamilyData::InstallSuperVersion(
-    SuperVersion* new_superversion, InstrumentedMutex* db_mutex) {
+void ColumnFamilyData::InstallSuperVersion(
+    SuperVersionContext* sv_context, InstrumentedMutex* db_mutex) {
   db_mutex->AssertHeld();
-  return InstallSuperVersion(new_superversion, db_mutex, mutable_cf_options_);
+  return InstallSuperVersion(sv_context, db_mutex, mutable_cf_options_);
 }
 
-SuperVersion* ColumnFamilyData::InstallSuperVersion(
-    SuperVersion* new_superversion, InstrumentedMutex* db_mutex,
+void ColumnFamilyData::InstallSuperVersion(
+    SuperVersionContext* sv_context, InstrumentedMutex* db_mutex,
     const MutableCFOptions& mutable_cf_options) {
+  SuperVersion* new_superversion = sv_context->new_superversion.release();
   new_superversion->db_mutex = db_mutex;
   new_superversion->mutable_cf_options = mutable_cf_options;
   new_superversion->Init(mem_, imm_.current(), current_);
@@ -930,23 +945,28 @@ SuperVersion* ColumnFamilyData::InstallSuperVersion(
   super_version_ = new_superversion;
   ++super_version_number_;
   super_version_->version_number = super_version_number_;
+  super_version_->write_stall_condition =
+      RecalculateWriteStallConditions(mutable_cf_options);
+
   if (old_superversion != nullptr) {
     if (old_superversion->mutable_cf_options.write_buffer_size !=
         mutable_cf_options.write_buffer_size) {
       mem_->UpdateWriteBufferSize(mutable_cf_options.write_buffer_size);
     }
+    if (old_superversion->write_stall_condition !=
+        new_superversion->write_stall_condition) {
+      sv_context->PushWriteStallNotification(
+          old_superversion->write_stall_condition,
+          new_superversion->write_stall_condition, GetName(), ioptions());
+    }
+    if (old_superversion->Unref()) {
+      old_superversion->Cleanup();
+      sv_context->superversions_to_free.push_back(old_superversion);
+    }
   }
 
   // Reset SuperVersions cached in thread local storage
   ResetThreadLocalSuperVersions();
-
-  RecalculateWriteStallConditions(mutable_cf_options);
-
-  if (old_superversion != nullptr && old_superversion->Unref()) {
-    old_superversion->Cleanup();
-    return old_superversion;  // will let caller delete outside of mutex
-  }
-  return nullptr;
 }
 
 void ColumnFamilyData::ResetThreadLocalSuperVersions() {

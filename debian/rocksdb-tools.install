@@ -1,0 +1,5 @@
+../../cache_bench             /usr/bin
+../../db_bench                /usr/bin
+../../ldb                     /usr/bin
+../../persistent_cache_bench  /usr/bin
+../../sst_dump                /usr/bin
