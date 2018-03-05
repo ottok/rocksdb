@@ -3,13 +3,13 @@ Section: database
 Priority: optional
 Maintainer: Laszlo Boszormenyi (GCS) <gcs@debian.org>
 Build-Depends: debhelper (>= 11), libgflags-dev, libsnappy-dev, libbz2-dev, zlib1g-dev, liblz4-dev, libzstd-dev
-Standards-Version: 4.1.2
+Standards-Version: 4.1.3
 Homepage: http://rocksdb.org/
 
 Package: librocksdb-dev
 Section: libdevel
 Architecture: amd64 arm64 ppc64el mips64el ppc64 sparc64
-Depends: ${misc:Depends}, librocksdb5.9 (= ${binary:Version})
+Depends: ${misc:Depends}, librocksdb5.10 (= ${binary:Version})
 Conflicts: librocksdb5.7
 Replaces: librocksdb5.7
 Description: persistent Key-Value Store for Flash and RAM Storage (development)
@@ -36,7 +36,7 @@ Description: persistent Key-Value Store for Flash and RAM Storage (development)
  This package contains libraries and header files for developing
  applications that use librocksdb .
 
-Package: librocksdb5.9
+Package: librocksdb5.10
 Section: libs
 Architecture: amd64 arm64 ppc64el mips64el ppc64 sparc64
 Depends: ${misc:Depends}, ${shlibs:Depends}

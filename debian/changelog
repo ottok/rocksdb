@@ -1,3 +1,13 @@
+rocksdb (5.10.4-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Make the build verbose.
+  * Don't specify parallel to debhelper.
+  * Update Standards-Version to 4.1.3 .
+  * Library transition from librocksdb5.9 to librocksdb5.10 .
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Mon, 05 Mar 2018 15:23:49 +0000
+
 rocksdb (5.9.2-1) experimental; urgency=medium
 
   * New upstream release.
