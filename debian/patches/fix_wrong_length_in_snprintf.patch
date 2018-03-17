@@ -1,0 +1,29 @@
+From cc340268e93345ac5dc7630b1c8838fe59a36684 Mon Sep 17 00:00:00 2001
+From: zhsj <zsj950618@gmail.com>
+Date: Fri, 16 Mar 2018 13:23:36 -0700
+Subject: [PATCH] fix wrong length in snprintf
+
+Summary: Closes https://github.com/facebook/rocksdb/pull/3622
+
+Differential Revision: D7307689
+
+Pulled By: ajkr
+
+fbshipit-source-id: b8f52effc63fea06c2058b39c60944c2c1f814b4
+---
+ db/db_compaction_filter_test.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/db/db_compaction_filter_test.cc b/db/db_compaction_filter_test.cc
+index 4e06c404ee..c5e8e547c5 100644
+--- a/db/db_compaction_filter_test.cc
++++ b/db/db_compaction_filter_test.cc
+@@ -107,7 +107,7 @@ class SkipEvenFilter : public CompactionFilter {
+     int i = std::stoi(key.ToString());
+     if (i / 10 % 2 == 0) {
+       char key_str[100];
+-      snprintf(key_str, sizeof(key), "%010d", i / 10 * 10 + 10);
++      snprintf(key_str, sizeof(key_str), "%010d", i / 10 * 10 + 10);
+       *skip_until = key_str;
+       ++cfilter_skips;
+       return Decision::kRemoveAndSkipUntil;

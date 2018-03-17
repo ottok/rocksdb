@@ -1,3 +1,16 @@
+rocksdb (5.11.3-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Add s390x architecture to compile on.
+  * Add i386 architecture to compile on (closes: #893073).
+  * Library transition from librocksdb5.10 to librocksdb5.11 .
+
+  [ zhsj <zsj950618@gmail.com> ]
+  * Fix shared library compile on ppc (closes: #893173).
+  * Fix wrong length in snprintf() .
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sat, 17 Mar 2018 08:36:43 +0000
+
 rocksdb (5.10.4-2) unstable; urgency=medium
 
   * Upload to Sid.
