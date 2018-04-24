@@ -1,3 +1,10 @@
+rocksdb (5.12.4-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Add mips{,el} architectures to compile on.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Tue, 24 Apr 2018 16:40:29 +0000
+
 rocksdb (5.12.2-1) experimental; urgency=medium
 
   * New upstream release.
