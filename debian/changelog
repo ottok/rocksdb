@@ -1,3 +1,9 @@
+rocksdb (5.13.3-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Wed, 13 Jun 2018 17:48:14 +0000
+
 rocksdb (5.13.2-1) unstable; urgency=medium
 
   * New upstream release.
