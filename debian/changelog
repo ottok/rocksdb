@@ -1,3 +1,17 @@
+rocksdb (5.14.3-1~bpo9+1) stretch-backports; urgency=medium
+
+  * Rebuild for stretch-backports.
+  * Require libzstd newer than 1.1.2 (from backports).
+
+ -- Sascha Steinbiss <satta@debian.org>  Tue, 11 Sep 2018 18:18:04 +0200
+
+rocksdb (5.14.3-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Update Standards-Version to 4.2.1 .
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sat, 01 Sep 2018 17:57:29 +0000
+
 rocksdb (5.14.2-2) unstable; urgency=medium
 
   * Backport fix for GCC 8 build (closes: #897848).
