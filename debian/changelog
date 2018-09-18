@@ -1,3 +1,10 @@
+rocksdb (5.15.10-1) experimental; urgency=medium
+
+  * New major upstream release.
+  * Library transition from librocksdb5.14 to librocksdb5.15 .
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Tue, 18 Sep 2018 20:52:12 +0000
+
 rocksdb (5.14.3-1) unstable; urgency=medium
 
   * New upstream release.
