@@ -8,7 +8,7 @@ Homepage: http://rocksdb.org/
 
 Package: librocksdb-dev
 Section: libdevel
-Architecture: amd64 arm64 ppc64el mips mipsel mips64el ppc64 sparc64 s390x i386
+Architecture: amd64 arm64 ppc64el mips mipsel mips64el sparc64 s390x i386
 Depends: ${misc:Depends}, librocksdb5.15 (= ${binary:Version})
 Conflicts: librocksdb5.7
 Replaces: librocksdb5.7
@@ -38,7 +38,7 @@ Description: persistent Key-Value Store for Flash and RAM Storage (development)
 
 Package: librocksdb5.15
 Section: libs
-Architecture: amd64 arm64 ppc64el mips mipsel mips64el ppc64 sparc64 s390x i386
+Architecture: amd64 arm64 ppc64el mips mipsel mips64el sparc64 s390x i386
 Depends: ${misc:Depends}, ${shlibs:Depends}
 Description: persistent Key-Value Store for Flash and RAM Storage
  C++ library providing an embedded key-value store, where keys and values are
@@ -62,7 +62,7 @@ Description: persistent Key-Value Store for Flash and RAM Storage
      processors
 
 Package: rocksdb-tools
-Architecture: amd64 arm64 ppc64el mips mipsel mips64el ppc64 sparc64 s390x i386
+Architecture: amd64 arm64 ppc64el mips mipsel mips64el sparc64 s390x i386
 Depends: ${misc:Depends}, ${shlibs:Depends}
 Description: persistent Key-Value Store for Flash and RAM Storage (tools)
  C++ library providing an embedded key-value store, where keys and values are

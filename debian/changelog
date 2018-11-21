@@ -1,3 +1,11 @@
+rocksdb (5.15.10-2) unstable; urgency=medium
+
+  * Remove ppc64 from build architectures, upstream doesn't want to
+    support it.
+  * Upload to Sid.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Wed, 21 Nov 2018 21:07:17 +0000
+
 rocksdb (5.15.10-1) experimental; urgency=medium
 
   * New major upstream release.
