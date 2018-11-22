@@ -1,3 +1,10 @@
+rocksdb (5.17.2-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Library transition from librocksdb5.15 to librocksdb5.17 .
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Thu, 22 Nov 2018 16:25:48 +0100
+
 rocksdb (5.15.10-2) unstable; urgency=medium
 
   * Remove ppc64 from build architectures, upstream doesn't want to
