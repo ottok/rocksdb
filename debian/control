@@ -2,8 +2,7 @@ Source: rocksdb
 Section: database
 Priority: optional
 Maintainer: Laszlo Boszormenyi (GCS) <gcs@debian.org>
-Uploaders: Sascha Steinbiss <satta@debian.org>
-Build-Depends: debhelper (>= 11), libgflags-dev, libsnappy-dev, libbz2-dev, zlib1g-dev, liblz4-dev, libzstd-dev (>= 1.1.3)
+Build-Depends: debhelper (>= 11), libgflags-dev, libsnappy-dev, libbz2-dev, zlib1g-dev, liblz4-dev, libzstd-dev
 Standards-Version: 4.2.1
 Homepage: https://rocksdb.org/
 
