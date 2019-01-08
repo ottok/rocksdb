@@ -1,3 +1,16 @@
+rocksdb (5.17.2-3~bpo9+1) stretch-backports; urgency=medium
+
+  * Rebuild for stretch-backports.
+
+ -- Sascha Steinbiss <satta@debian.org>  Tue, 08 Jan 2019 16:50:18 +0100
+
+rocksdb (5.17.2-3) unstable; urgency=medium
+
+  * Backport fix for snprintf() buffer overflow.
+  * Upload to Sid.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Wed, 19 Dec 2018 17:01:38 +0000
+
 rocksdb (5.17.2-2) experimental; urgency=medium
 
   * Backport upstream fix for db_bench_tool.cc FTBFS.
@@ -25,6 +38,13 @@ rocksdb (5.15.10-1) experimental; urgency=medium
   * Library transition from librocksdb5.14 to librocksdb5.15 .
 
  -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Tue, 18 Sep 2018 20:52:12 +0000
+
+rocksdb (5.14.3-1~bpo9+1) stretch-backports; urgency=medium
+
+  * Rebuild for stretch-backports.
+  * Require libzstd newer than 1.1.2 (from backports).
+
+ -- Sascha Steinbiss <satta@debian.org>  Tue, 11 Sep 2018 18:18:04 +0200
 
 rocksdb (5.14.3-1) unstable; urgency=medium
 

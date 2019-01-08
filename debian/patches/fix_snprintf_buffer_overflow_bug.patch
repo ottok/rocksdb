@@ -1,0 +1,38 @@
+From 1fb68055271bc4cf879325db49f8c4266bbcb5e6 Mon Sep 17 00:00:00 2001
+From: Maysam Yabandeh <myabandeh@fb.com>
+Date: Fri, 5 Oct 2018 14:49:01 -0700
+Subject: [PATCH] Fix snprintf buffer overflow bug (#4465)
+
+Summary:
+The contract of snprintf says that it returns "The number of characters that would have been written if n had been sufficiently large" http://www.cplusplus.com/reference/cstdio/snprintf/
+The existing code however was assuming that the return value is the actual number of written bytes and uses that to reposition the starting point on the next call to snprintf. This leads to buffer overflow when the last call to snprintf has filled up the buffer.
+Pull Request resolved: https://github.com/facebook/rocksdb/pull/4465
+
+Differential Revision: D10224080
+
+Pulled By: maysamyabandeh
+
+fbshipit-source-id: 40f44e122d15b0db439812a0a361167cf012de3e
+---
+ db/compaction.cc | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/db/compaction.cc b/db/compaction.cc
+index 4ea92d5cc7..b3921eb4bc 100644
+--- a/db/compaction.cc
++++ b/db/compaction.cc
+@@ -331,12 +331,14 @@ const char* Compaction::InputLevelSummary(
+     if (!is_first) {
+       len +=
+           snprintf(scratch->buffer + len, sizeof(scratch->buffer) - len, " + ");
++      len = std::min(len, static_cast<int>(sizeof(scratch->buffer)));
+     } else {
+       is_first = false;
+     }
+     len += snprintf(scratch->buffer + len, sizeof(scratch->buffer) - len,
+                     "%" ROCKSDB_PRIszt "@%d", input_level.size(),
+                     input_level.level);
++    len = std::min(len, static_cast<int>(sizeof(scratch->buffer)));
+   }
+   snprintf(scratch->buffer + len, sizeof(scratch->buffer) - len,
+            " files to L%d", output_level());
