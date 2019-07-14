@@ -1,0 +1,80 @@
+From 61876614dce8c9155e28d40b5d95ec1bf1cbfa47 Mon Sep 17 00:00:00 2001
+From: Sergei Petrunia <psergey@askmonty.org>
+Date: Fri, 12 Jul 2019 17:26:19 -0700
+Subject: [PATCH] Fix MyRocks compile warnings-treated-as-errors on Fedora 30,
+ gcc 9.1.1 (#5553)
+
+Summary:
+- Provide assignment operator in CompactionStats
+- Provide a copy constructor for FileDescriptor
+- Remove std::move from "return std::move(t)" in BoundedQueue
+Pull Request resolved: https://github.com/facebook/rocksdb/pull/5553
+
+Differential Revision: D16230170
+
+fbshipit-source-id: fd7c6e52390b2db1be24141e25649cf62424d078
+---
+ db/internal_stats.h                           | 22 +++++++++++++++++++
+ db/version_edit.h                             |  2 ++
+ .../persistent_cache/persistent_cache_util.h  |  2 +-
+ 3 files changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/db/internal_stats.h b/db/internal_stats.h
+index 20fb07f485..ebe90d574d 100644
+--- a/db/internal_stats.h
++++ b/db/internal_stats.h
+@@ -237,6 +237,28 @@ class InternalStats {
+       }
+     }
+ 
++    CompactionStats& operator=(const CompactionStats& c) {
++      micros = c.micros;
++      cpu_micros = c.cpu_micros;
++      bytes_read_non_output_levels = c.bytes_read_non_output_levels;
++      bytes_read_output_level = c.bytes_read_output_level;
++      bytes_written = c.bytes_written;
++      bytes_moved = c.bytes_moved;
++      num_input_files_in_non_output_levels =
++          c.num_input_files_in_non_output_levels;
++      num_input_files_in_output_level = c.num_input_files_in_output_level;
++      num_output_files = c.num_output_files;
++      num_input_records = c.num_input_records;
++      num_dropped_records = c.num_dropped_records;
++      count = c.count;
++
++      int num_of_reasons = static_cast<int>(CompactionReason::kNumOfReasons);
++      for (int i = 0; i < num_of_reasons; i++) {
++        counts[i] = c.counts[i];
++      }
++      return *this;
++    }
++
+     void Clear() {
+       this->micros = 0;
+       this->cpu_micros = 0;
+diff --git a/db/version_edit.h b/db/version_edit.h
+index e1857b37fc..4a93db34e1 100644
+--- a/db/version_edit.h
++++ b/db/version_edit.h
+@@ -52,6 +52,8 @@ struct FileDescriptor {
+         smallest_seqno(_smallest_seqno),
+         largest_seqno(_largest_seqno) {}
+ 
++  FileDescriptor(const FileDescriptor& fd) { *this=fd; }
++
+   FileDescriptor& operator=(const FileDescriptor& fd) {
+     table_reader = fd.table_reader;
+     packed_number_and_path_id = fd.packed_number_and_path_id;
+diff --git a/utilities/persistent_cache/persistent_cache_util.h b/utilities/persistent_cache/persistent_cache_util.h
+index 214bb5875d..254c038f98 100644
+--- a/utilities/persistent_cache/persistent_cache_util.h
++++ b/utilities/persistent_cache/persistent_cache_util.h
+@@ -48,7 +48,7 @@ class BoundedQueue {
+     T t = std::move(q_.front());
+     size_ -= t.Size();
+     q_.pop_front();
+-    return std::move(t);
++    return t;
+   }
+ 
+   size_t Size() const {

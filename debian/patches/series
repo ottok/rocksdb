@@ -1,5 +1,4 @@
 install_dir-is-destdir.patch
 build_reproducible.patch
 verbose_build.patch
-fix_db_bench_tool_FTBFS.patch
-fix_snprintf_buffer_overflow_bug.patch
+fix_GCC_9_FTBFS.patch

@@ -1,3 +1,11 @@
+rocksdb (6.1.2-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Library transition from librocksdb5.17 to librocksdb6.1 .
+  * Fix FTBFS with GCC 9 (closes: #925818).
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sun, 14 Jul 2019 05:31:06 +0000
+
 rocksdb (5.17.2-3) unstable; urgency=medium
 
   * Backport fix for snprintf() buffer overflow.
