@@ -11,11 +11,6 @@ Copyright: Copyright (C) 2011- Facebook, Inc.,
  Copyright (C) 2013- Jeff Dean <jeff@google.com>
 License: GPL-2 or Apache-2.0
 
-Files: third-party/flashcache/flashcache_ioctl.h
-Copyright: Copyright (C) 2010 Mohan Srinivasan <mohan@facebook.com>,
- Copyright (C) 2006 International Business Machines Corp.
-License: GPL-2
-
 Files: java/benchmark/src/main/java/org/rocksdb/benchmark/DbBenchmark.java
 Copyright: Copyright (C) 2011 Dain Sundstrom <dain@iq80.com>,
  Copyright (C) 2011 FuseSource Corp. https://fusesource.com
