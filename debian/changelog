@@ -1,3 +1,9 @@
+rocksdb (6.5.2-2) experimental; urgency=medium
+
+  * Fix db_test for i386 and mipsel.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sat, 28 Dec 2019 22:54:16 +0000
+
 rocksdb (6.5.2-1) experimental; urgency=medium
 
   * New upstream release.
