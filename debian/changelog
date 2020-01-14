@@ -1,3 +1,10 @@
+rocksdb (6.5.3-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Enable building on armel and armhf.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Tue, 14 Jan 2020 19:39:26 +0000
+
 rocksdb (6.5.2-2) experimental; urgency=medium
 
   * Fix db_test for i386 and mipsel.

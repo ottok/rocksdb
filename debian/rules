@@ -10,6 +10,11 @@ ifneq ($(filter $(DEB_HOST_ARCH),mips mipsel),)
 	export PLATFORM_LDFLAGS=-latomic
 endif
 
+ifeq ($(DEB_HOST_ARCH),armel)
+	export DEB_CFLAGS_MAINT_APPEND= -mfloat-abi=softfp
+	export DEB_CXXFLAGS_MAINT_APPEND= -mfloat-abi=softfp
+endif
+
 override_dh_auto_build:
 	PORTABLE=1 make all
 	PORTABLE=1 make shared_lib
