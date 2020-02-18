@@ -113,6 +113,17 @@ bool MemTableListVersion::Get(const LookupKey& key, std::string* value,
                      is_blob_index);
 }
 
+void MemTableListVersion::MultiGet(const ReadOptions& read_options,
+                                   MultiGetRange* range, ReadCallback* callback,
+                                   bool* is_blob) {
+  for (auto memtable : memlist_) {
+    memtable->MultiGet(read_options, range, callback, is_blob);
+    if (range->empty()) {
+      return;
+    }
+  }
+}
+
 bool MemTableListVersion::GetMergeOperands(
     const LookupKey& key, Status* s, MergeContext* merge_context,
     SequenceNumber* max_covering_tombstone_seq, const ReadOptions& read_opts) {
@@ -175,11 +186,14 @@ Status MemTableListVersion::AddRangeTombstoneIterators(
     const ReadOptions& read_opts, Arena* /*arena*/,
     RangeDelAggregator* range_del_agg) {
   assert(range_del_agg != nullptr);
+  // Except for snapshot read, using kMaxSequenceNumber is OK because these
+  // are immutable memtables.
+  SequenceNumber read_seq = read_opts.snapshot != nullptr
+                                ? read_opts.snapshot->GetSequenceNumber()
+                                : kMaxSequenceNumber;
   for (auto& m : memlist_) {
-    // Using kMaxSequenceNumber is OK because these are immutable memtables.
     std::unique_ptr<FragmentedRangeTombstoneIterator> range_del_iter(
-        m->NewRangeTombstoneIterator(read_opts,
-                                     kMaxSequenceNumber /* read_seq */));
+        m->NewRangeTombstoneIterator(read_opts, read_seq));
     range_del_agg->AddTombstones(std::move(range_del_iter));
   }
   return Status::OK();
@@ -374,7 +388,8 @@ Status MemTableList::TryInstallMemtableFlushResults(
     const autovector<MemTable*>& mems, LogsWithPrepTracker* prep_tracker,
     VersionSet* vset, InstrumentedMutex* mu, uint64_t file_number,
     autovector<MemTable*>* to_delete, Directory* db_directory,
-    LogBuffer* log_buffer) {
+    LogBuffer* log_buffer,
+    std::list<std::unique_ptr<FlushJobInfo>>* committed_flush_jobs_info) {
   AutoThreadOperationStageUpdater stage_updater(
       ThreadStatus::STAGE_MEMTABLE_INSTALL_FLUSH_RESULTS);
   mu->AssertHeld();
@@ -432,6 +447,14 @@ Status MemTableList::TryInstallMemtableFlushResults(
                          cfd->GetName().c_str(), m->file_number_);
         edit_list.push_back(&m->edit_);
         memtables_to_flush.push_back(m);
+#ifndef ROCKSDB_LITE
+        std::unique_ptr<FlushJobInfo> info = m->ReleaseFlushJobInfo();
+        if (info != nullptr) {
+          committed_flush_jobs_info->push_back(std::move(info));
+        }
+#else
+        (void)committed_flush_jobs_info;
+#endif  // !ROCKSDB_LITE
       }
       batch_count++;
     }
@@ -723,11 +746,17 @@ void MemTableList::RemoveOldMemTables(uint64_t log_number,
   assert(to_delete != nullptr);
   InstallNewVersion();
   auto& memlist = current_->memlist_;
+  autovector<MemTable*> old_memtables;
   for (auto it = memlist.rbegin(); it != memlist.rend(); ++it) {
     MemTable* mem = *it;
     if (mem->GetNextLogNumber() > log_number) {
       break;
     }
+    old_memtables.push_back(mem);
+  }
+
+  for (auto it = old_memtables.begin(); it != old_memtables.end(); ++it) {
+    MemTable* mem = *it;
     current_->Remove(mem, to_delete);
     --num_flush_not_started_;
     if (0 == num_flush_not_started_) {

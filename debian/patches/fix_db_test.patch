@@ -2,20 +2,20 @@ Description: limit block_size to 32 bit
  Make the block_size to 3 Gb only on i386 and mipsel.
 Author: Laszlo Boszormenyi (GCS) <gcs@debian.org>
 Forwarded: no
-Last-Update: 2019-12-28
+Last-Update: 2020-02-18
 
 ---
 
---- rocksdb-6.5.2.orig/db/db_test.cc
-+++ rocksdb-6.5.2/db/db_test.cc
-@@ -6262,7 +6262,11 @@ TEST_F(DBTest, LargeBlockSizeTest) {
-   CreateAndReopenWithCF({"pikachu"}, options);
+--- a/db/db_test.cc
++++ b/db/db_test.cc
+@@ -6384,6 +6384,11 @@ TEST_F(DBTest, LargeBlockSizeTest) {
    ASSERT_OK(Put(0, "foo", "bar"));
    BlockBasedTableOptions table_options;
+   table_options.block_size = 8LL * 1024 * 1024 * 1024LL;
 +#if !defined(__i386__) && !defined(__mips__)
-   table_options.block_size = 8LL*1024*1024*1024LL;
++  table_options.block_size = 8LL * 1024 * 1024 * 1024LL;
 +#else
-+  table_options.block_size = 3LL*1024*1024*1024LL;
++  table_options.block_size = 3LL * 1024 * 1024 * 1024LL;
 +#endif
    options.table_factory.reset(NewBlockBasedTableFactory(table_options));
    ASSERT_NOK(TryReopenWithColumnFamilies({"default", "pikachu"}, options));
