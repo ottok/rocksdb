@@ -6,7 +6,7 @@
 
 include /usr/share/dpkg/architecture.mk
 
-ifneq ($(filter $(DEB_HOST_ARCH),mips mipsel),)
+ifneq ($(filter $(DEB_HOST_ARCH),armel mips mipsel riscv64),)
 	export PLATFORM_LDFLAGS=-latomic
 endif
 
@@ -16,8 +16,8 @@ ifeq ($(DEB_HOST_ARCH),armel)
 endif
 
 override_dh_auto_build:
-	PORTABLE=1 make all
-	PORTABLE=1 make shared_lib
+	PORTABLE=1 dh_auto_build -- all
+	PORTABLE=1 dh_auto_build -- shared_lib
 
 override_dh_auto_install:
 	dh_auto_install --destdir=$(CURDIR)/debian/tmp/usr/
