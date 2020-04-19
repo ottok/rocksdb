@@ -1,3 +1,10 @@
+rocksdb (6.7.3-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Library transition from librocksdb6.6 to librocksdb6.7 .
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sun, 19 Apr 2020 19:19:07 +0000
+
 rocksdb (6.6.4-2) experimental; urgency=medium
 
   * Really fix db_test for i386 and mipsel for this release.
