@@ -13,7 +13,7 @@
 #include "file/writable_file_writer.h"
 #include "options/cf_options.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 class SstFileDumper {
  public:
@@ -38,7 +38,14 @@ class SstFileDumper {
   int ShowAllCompressionSizes(
       size_t block_size,
       const std::vector<std::pair<CompressionType, const char*>>&
-          compression_types);
+        compression_types,
+      int32_t compress_level_from,
+      int32_t compress_level_to);
+
+  int ShowCompressionSize(
+      size_t block_size,
+      CompressionType compress_type,
+      const CompressionOptions& compress_opt);
 
  private:
   // Get the TableReader implementation for the sst file
@@ -82,6 +89,6 @@ class SstFileDumper {
   std::unique_ptr<TableProperties> table_properties_;
 };
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
 
 #endif  // ROCKSDB_LITE

@@ -32,14 +32,13 @@ ROCKSDB_EXTERNAL_DEPS = [
     ("lz4", None, "lz4"),
     ("zstd", None),
     ("tbb", None),
-    ("liburing", None, "uring"),
     ("googletest", None, "gtest"),
 ]
 
 ROCKSDB_OS_DEPS = [
     (
         "linux",
-        ["third-party//numa:numa"],
+        ["third-party//numa:numa", "third-party//liburing:uring"],
     ),
 ]
 
@@ -79,7 +78,6 @@ ROCKSDB_PREPROCESSOR_FLAGS = [
     "-DZSTD_STATIC_LINKING_ONLY",
     "-DGFLAGS=gflags",
     "-DTBB",
-    "-DLIBURING",
 
     # Added missing flags from output of build_detect_platform
     "-DROCKSDB_BACKTRACE",
@@ -116,6 +114,11 @@ ROCKSDB_OS_DEPS += ([(
     "linux",
     ["third-party//jemalloc:headers"],
 )] if sanitizer == "" else [])
+
+ROCKSDB_LIB_DEPS = [
+    ":rocksdb_lib",
+    ":rocksdb_test_lib",
+] if not is_opt_mode else [":rocksdb_lib"]
 """
 
 
@@ -130,6 +133,21 @@ cpp_library(
     os_preprocessor_flags = ROCKSDB_OS_PREPROCESSOR_FLAGS,
     preprocessor_flags = ROCKSDB_PREPROCESSOR_FLAGS,
     deps = [{deps}],
+    external_deps = ROCKSDB_EXTERNAL_DEPS,
+)
+"""
+
+rocksdb_library_template = """
+cpp_library(
+    name = "{name}",
+    srcs = [{srcs}],
+    {headers_attr_prefix}headers = {headers},
+    arch_preprocessor_flags = ROCKSDB_ARCH_PREPROCESSOR_FLAGS,
+    compiler_flags = ROCKSDB_COMPILER_FLAGS,
+    os_deps = ROCKSDB_OS_DEPS,
+    os_preprocessor_flags = ROCKSDB_OS_PREPROCESSOR_FLAGS,
+    preprocessor_flags = ROCKSDB_PREPROCESSOR_FLAGS,
+    deps = ROCKSDB_LIB_DEPS,
     external_deps = ROCKSDB_EXTERNAL_DEPS,
 )
 """
