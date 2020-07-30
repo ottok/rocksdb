@@ -1,3 +1,10 @@
+rocksdb (6.11.4-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Library transition from librocksdb6.10 to librocksdb6.11 .
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Thu, 30 Jul 2020 20:07:53 +0200
+
 rocksdb (6.10.2-1) experimental; urgency=medium
 
   * New upstream release.

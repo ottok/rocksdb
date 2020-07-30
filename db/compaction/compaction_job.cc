@@ -542,7 +542,7 @@ void CompactionJob::GenSubcompactionBoundaries() {
     // Greedily add ranges to the subcompaction until the sum of the ranges'
     // sizes becomes >= the expected mean size of a subcompaction
     sum = 0;
-    for (size_t i = 0; i < ranges.size() - 1; i++) {
+    for (size_t i = 0; i + 1 < ranges.size(); i++) {
       sum += ranges[i].size;
       if (subcompactions == 1) {
         // If there's only one left to schedule then it goes to the end so no
@@ -654,6 +654,8 @@ Status CompactionJob::Run() {
                 compact_->compaction->output_level()),
             TableReaderCaller::kCompactionRefill, /*arena=*/nullptr,
             /*skip_filters=*/false, compact_->compaction->output_level(),
+            MaxFileSizeForL0MetaPin(
+                *compact_->compaction->mutable_cf_options()),
             /*smallest_compaction_key=*/nullptr,
             /*largest_compaction_key=*/nullptr,
             /*allow_unprepared_value=*/false);
@@ -719,7 +721,6 @@ Status CompactionJob::Install(const MutableCFOptions& mutable_cf_options) {
   cfd->internal_stats()->AddCompactionStats(
       compact_->compaction->output_level(), thread_pri_, compaction_stats_);
 
-  versions_->SetIOStatusOK();
   if (status.ok()) {
     status = InstallCompactionResults(mutable_cf_options);
   }
@@ -894,9 +895,10 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
   sub_compact->c_iter.reset(new CompactionIterator(
       input.get(), cfd->user_comparator(), &merge, versions_->LastSequence(),
       &existing_snapshots_, earliest_write_conflict_snapshot_,
-      snapshot_checker_, env_, ShouldReportDetailedTime(env_, stats_), false,
-      &range_del_agg, sub_compact->compaction, compaction_filter,
-      shutting_down_, preserve_deletes_seqnum_, manual_compaction_paused_,
+      snapshot_checker_, env_, ShouldReportDetailedTime(env_, stats_),
+      /*expect_valid_internal_key=*/true, &range_del_agg,
+      sub_compact->compaction, compaction_filter, shutting_down_,
+      preserve_deletes_seqnum_, manual_compaction_paused_,
       db_options_.info_log));
   auto c_iter = sub_compact->c_iter.get();
   c_iter->SeekToFirst();

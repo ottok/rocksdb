@@ -210,7 +210,15 @@ Status DBImpl::FlushMemTableToOutputFile(
   if (!s.ok() && !s.IsShutdownInProgress() && !s.IsColumnFamilyDropped()) {
     if (!io_s.ok() && !io_s.IsShutdownInProgress() &&
         !io_s.IsColumnFamilyDropped()) {
-      error_handler_.SetBGError(io_s, BackgroundErrorReason::kFlush);
+      // Error while writing to MANIFEST.
+      // In fact, versions_->io_status() can also be the result of renaming
+      // CURRENT file. With current code, it's just difficult to tell. So just
+      // be pessimistic and try write to a new MANIFEST.
+      // TODO: distinguish between MANIFEST write and CURRENT renaming
+      auto err_reason = versions_->io_status().ok()
+                            ? BackgroundErrorReason::kFlush
+                            : BackgroundErrorReason::kManifestWrite;
+      error_handler_.SetBGError(io_s, err_reason);
     } else {
       Status new_bg_error = s;
       error_handler_.SetBGError(new_bg_error, BackgroundErrorReason::kFlush);
@@ -573,8 +581,16 @@ Status DBImpl::AtomicFlushMemTablesToOutputFiles(
   // Need to undo atomic flush if something went wrong, i.e. s is not OK and
   // it is not because of CF drop.
   if (!s.ok() && !s.IsColumnFamilyDropped()) {
-    if (!io_s.ok() && io_s.IsColumnFamilyDropped()) {
-      error_handler_.SetBGError(io_s, BackgroundErrorReason::kFlush);
+    if (!io_s.ok() && !io_s.IsColumnFamilyDropped()) {
+      // Error while writing to MANIFEST.
+      // In fact, versions_->io_status() can also be the result of renaming
+      // CURRENT file. With current code, it's just difficult to tell. So just
+      // be pessimistic and try write to a new MANIFEST.
+      // TODO: distinguish between MANIFEST write and CURRENT renaming
+      auto err_reason = versions_->io_status().ok()
+                            ? BackgroundErrorReason::kFlush
+                            : BackgroundErrorReason::kManifestWrite;
+      error_handler_.SetBGError(io_s, err_reason);
     } else {
       Status new_bg_error = s;
       error_handler_.SetBGError(new_bg_error, BackgroundErrorReason::kFlush);
@@ -1906,7 +1922,7 @@ Status DBImpl::WaitForFlushMemTables(
       }
     }
     if (1 == num_dropped && 1 == num) {
-      return Status::InvalidArgument("Cannot flush a dropped CF");
+      return Status::ColumnFamilyDropped();
     }
     // Column families involved in this flush request have either been dropped
     // or finished flush. Then it's time to finish waiting.
@@ -2687,7 +2703,6 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
     for (const auto& f : *c->inputs(0)) {
       c->edit()->DeleteFile(c->level(), f->fd.GetNumber());
     }
-    versions_->SetIOStatusOK();
     status = versions_->LogAndApply(c->column_family_data(),
                                     *c->mutable_cf_options(), c->edit(),
                                     &mutex_, directories_.GetDbDir());
@@ -2745,7 +2760,6 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
       }
     }
 
-    versions_->SetIOStatusOK();
     status = versions_->LogAndApply(c->column_family_data(),
                                     *c->mutable_cf_options(), c->edit(),
                                     &mutex_, directories_.GetDbDir());
@@ -2877,7 +2891,15 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
     ROCKS_LOG_WARN(immutable_db_options_.info_log, "Compaction error: %s",
                    status.ToString().c_str());
     if (!io_s.ok()) {
-      error_handler_.SetBGError(io_s, BackgroundErrorReason::kCompaction);
+      // Error while writing to MANIFEST.
+      // In fact, versions_->io_status() can also be the result of renaming
+      // CURRENT file. With current code, it's just difficult to tell. So just
+      // be pessimistic and try write to a new MANIFEST.
+      // TODO: distinguish between MANIFEST write and CURRENT renaming
+      auto err_reason = versions_->io_status().ok()
+                            ? BackgroundErrorReason::kCompaction
+                            : BackgroundErrorReason::kManifestWrite;
+      error_handler_.SetBGError(io_s, err_reason);
     } else {
       error_handler_.SetBGError(status, BackgroundErrorReason::kCompaction);
     }

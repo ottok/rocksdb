@@ -9,7 +9,7 @@ Homepage: https://rocksdb.org/
 Package: librocksdb-dev
 Section: libdevel
 Architecture: amd64 arm64 armel armhf ppc64el mips mipsel mips64el sparc64 s390x i386 riscv64
-Depends: ${misc:Depends}, librocksdb6.10 (= ${binary:Version})
+Depends: ${misc:Depends}, librocksdb6.11 (= ${binary:Version})
 Conflicts: librocksdb5.7
 Replaces: librocksdb5.7
 Description: persistent Key-Value Store for Flash and RAM Storage (development)
@@ -36,7 +36,7 @@ Description: persistent Key-Value Store for Flash and RAM Storage (development)
  This package contains libraries and header files for developing
  applications that use librocksdb .
 
-Package: librocksdb6.10
+Package: librocksdb6.11
 Section: libs
 Architecture: amd64 arm64 armel armhf ppc64el mips mipsel mips64el sparc64 s390x i386 riscv64
 Depends: ${misc:Depends}, ${shlibs:Depends}

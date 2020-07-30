@@ -115,6 +115,7 @@ DEFINE_string(
     "readrandomwriterandom,"
     "updaterandom,"
     "xorupdaterandom,"
+    "approximatesizerandom,"
     "randomwithverify,"
     "fill100K,"
     "crc32c,"
@@ -1850,7 +1851,7 @@ class CombinedStats;
 class Stats {
  private:
   int id_;
-  uint64_t start_;
+  uint64_t start_ = 0;
   uint64_t sine_interval_;
   uint64_t finish_;
   double seconds_;
@@ -3021,6 +3022,10 @@ class Benchmark {
         fprintf(stderr, "entries_per_batch = %" PRIi64 "\n",
                 entries_per_batch_);
         method = &Benchmark::MultiReadRandom;
+      } else if (name == "approximatesizerandom") {
+        fprintf(stderr, "entries_per_batch = %" PRIi64 "\n",
+                entries_per_batch_);
+        method = &Benchmark::ApproximateSizeRandom;
       } else if (name == "mixgraph") {
         method = &Benchmark::MixGraph;
       } else if (name == "readmissing") {
@@ -5211,6 +5216,53 @@ class Benchmark {
     thread->stats.AddMessage(msg);
   }
 
+  // Calls ApproximateSize over random key ranges.
+  void ApproximateSizeRandom(ThreadState* thread) {
+    int64_t size_sum = 0;
+    int64_t num_sizes = 0;
+    const size_t batch_size = entries_per_batch_;
+    std::vector<Range> ranges;
+    std::vector<Slice> lkeys;
+    std::vector<std::unique_ptr<const char[]>> lkey_guards;
+    std::vector<Slice> rkeys;
+    std::vector<std::unique_ptr<const char[]>> rkey_guards;
+    std::vector<uint64_t> sizes;
+    while (ranges.size() < batch_size) {
+      // Ugly without C++17 return from emplace_back
+      lkey_guards.emplace_back();
+      rkey_guards.emplace_back();
+      lkeys.emplace_back(AllocateKey(&lkey_guards.back()));
+      rkeys.emplace_back(AllocateKey(&rkey_guards.back()));
+      ranges.emplace_back(lkeys.back(), rkeys.back());
+      sizes.push_back(0);
+    }
+    Duration duration(FLAGS_duration, reads_);
+    while (!duration.Done(1)) {
+      DB* db = SelectDB(thread);
+      for (size_t i = 0; i < batch_size; ++i) {
+        int64_t lkey = GetRandomKey(&thread->rand);
+        int64_t rkey = GetRandomKey(&thread->rand);
+        if (lkey > rkey) {
+          std::swap(lkey, rkey);
+        }
+        GenerateKeyFromInt(lkey, FLAGS_num, &lkeys[i]);
+        GenerateKeyFromInt(rkey, FLAGS_num, &rkeys[i]);
+      }
+      db->GetApproximateSizes(&ranges[0], static_cast<int>(entries_per_batch_),
+                              &sizes[0]);
+      num_sizes += entries_per_batch_;
+      for (int64_t size : sizes) {
+        size_sum += size;
+      }
+      thread->stats.FinishedOps(nullptr, db, entries_per_batch_, kOthers);
+    }
+
+    char msg[100];
+    snprintf(msg, sizeof(msg), "(Avg approx size=%g)",
+             static_cast<double>(size_sum) / static_cast<double>(num_sizes));
+    thread->stats.AddMessage(msg);
+  }
+
   // The inverse function of Pareto distribution
   int64_t ParetoCdfInversion(double u, double theta, double k, double sigma) {
     double ret;
@@ -5415,13 +5467,15 @@ class Benchmark {
 
       // Select one key in the key-range and compose the keyID
       int64_t key_offset = 0, key_seed;
-      if (key_dist_a == 0.0 && key_dist_b == 0.0) {
+      if (key_dist_a == 0.0 || key_dist_b == 0.0) {
         key_offset = ini_rand % keyrange_size_;
       } else {
+        double u =
+            static_cast<double>(ini_rand % keyrange_size_) / keyrange_size_;
         key_seed = static_cast<int64_t>(
-            ceil(std::pow((ini_rand / key_dist_a), (1 / key_dist_b))));
+            ceil(std::pow((u / key_dist_a), (1 / key_dist_b))));
         Random64 rand_key(key_seed);
-        key_offset = static_cast<int64_t>(rand_key.Next()) % keyrange_size_;
+        key_offset = rand_key.Next() % keyrange_size_;
       }
       return keyrange_size_ * keyrange_id + key_offset;
     }
@@ -5448,6 +5502,7 @@ class Benchmark {
     double write_rate = 1000000.0;
     double read_rate = 1000000.0;
     bool use_prefix_modeling = false;
+    bool use_random_modeling = false;
     GenerateTwoTermExpKeys gen_exp;
     std::vector<double> ratio{FLAGS_mix_get_ratio, FLAGS_mix_put_ratio,
                               FLAGS_mix_seek_ratio};
@@ -5482,6 +5537,9 @@ class Benchmark {
           FLAGS_num, FLAGS_keyrange_dist_a, FLAGS_keyrange_dist_b,
           FLAGS_keyrange_dist_c, FLAGS_keyrange_dist_d);
     }
+    if (FLAGS_key_dist_a == 0 || FLAGS_key_dist_b == 0) {
+      use_random_modeling = true;
+    }
 
     Duration duration(FLAGS_duration, reads_);
     while (!duration.Done(1)) {
@@ -5492,7 +5550,9 @@ class Benchmark {
       double u = static_cast<double>(rand_v) / FLAGS_num;
 
       // Generate the keyID based on the key hotness and prefix hotness
-      if (use_prefix_modeling) {
+      if (use_random_modeling) {
+        key_rand = ini_rand;
+      } else if (use_prefix_modeling) {
         key_rand =
             gen_exp.DistGetKeyID(ini_rand, FLAGS_key_dist_a, FLAGS_key_dist_b);
       } else {

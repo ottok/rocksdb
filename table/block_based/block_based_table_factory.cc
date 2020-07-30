@@ -160,6 +160,34 @@ size_t TailPrefetchStats::GetSuggestedPrefetchSize() {
 }
 
 #ifndef ROCKSDB_LITE
+static std::unordered_map<std::string, BlockBasedTableOptions::IndexType>
+    block_base_table_index_type_string_map = {
+        {"kBinarySearch", BlockBasedTableOptions::IndexType::kBinarySearch},
+        {"kHashSearch", BlockBasedTableOptions::IndexType::kHashSearch},
+        {"kTwoLevelIndexSearch",
+         BlockBasedTableOptions::IndexType::kTwoLevelIndexSearch},
+        {"kBinarySearchWithFirstKey",
+         BlockBasedTableOptions::IndexType::kBinarySearchWithFirstKey}};
+
+static std::unordered_map<std::string,
+                          BlockBasedTableOptions::DataBlockIndexType>
+    block_base_table_data_block_index_type_string_map = {
+        {"kDataBlockBinarySearch",
+         BlockBasedTableOptions::DataBlockIndexType::kDataBlockBinarySearch},
+        {"kDataBlockBinaryAndHash",
+         BlockBasedTableOptions::DataBlockIndexType::kDataBlockBinaryAndHash}};
+
+static std::unordered_map<std::string,
+                          BlockBasedTableOptions::IndexShorteningMode>
+    block_base_table_index_shortening_mode_string_map = {
+        {"kNoShortening",
+         BlockBasedTableOptions::IndexShorteningMode::kNoShortening},
+        {"kShortenSeparators",
+         BlockBasedTableOptions::IndexShorteningMode::kShortenSeparators},
+        {"kShortenSeparatorsAndSuccessor",
+         BlockBasedTableOptions::IndexShorteningMode::
+             kShortenSeparatorsAndSuccessor}};
+
 static std::unordered_map<std::string, OptionTypeInfo>
     block_based_table_type_info = {
         /* currently not supported
@@ -185,22 +213,21 @@ static std::unordered_map<std::string, OptionTypeInfo>
                    pin_l0_filter_and_index_blocks_in_cache),
           OptionType::kBoolean, OptionVerificationType::kNormal,
           OptionTypeFlags::kNone, 0}},
-        {"index_type",
-         {offsetof(struct BlockBasedTableOptions, index_type),
-          OptionType::kBlockBasedTableIndexType,
-          OptionVerificationType::kNormal, OptionTypeFlags::kNone, 0}},
+        {"index_type", OptionTypeInfo::Enum<BlockBasedTableOptions::IndexType>(
+                           offsetof(struct BlockBasedTableOptions, index_type),
+                           &block_base_table_index_type_string_map)},
         {"hash_index_allow_collision",
          {offsetof(struct BlockBasedTableOptions, hash_index_allow_collision),
           OptionType::kBoolean, OptionVerificationType::kNormal,
           OptionTypeFlags::kNone, 0}},
         {"data_block_index_type",
-         {offsetof(struct BlockBasedTableOptions, data_block_index_type),
-          OptionType::kBlockBasedTableDataBlockIndexType,
-          OptionVerificationType::kNormal, OptionTypeFlags::kNone, 0}},
+         OptionTypeInfo::Enum<BlockBasedTableOptions::DataBlockIndexType>(
+             offsetof(struct BlockBasedTableOptions, data_block_index_type),
+             &block_base_table_data_block_index_type_string_map)},
         {"index_shortening",
-         {offsetof(struct BlockBasedTableOptions, index_shortening),
-          OptionType::kBlockBasedTableIndexShorteningMode,
-          OptionVerificationType::kNormal, OptionTypeFlags::kNone, 0}},
+         OptionTypeInfo::Enum<BlockBasedTableOptions::IndexShorteningMode>(
+             offsetof(struct BlockBasedTableOptions, index_shortening),
+             &block_base_table_index_shortening_mode_string_map)},
         {"data_block_hash_table_util_ratio",
          {offsetof(struct BlockBasedTableOptions,
                    data_block_hash_table_util_ratio),
@@ -391,8 +418,10 @@ Status BlockBasedTableFactory::NewTableReader(
       file_size, table_reader, table_reader_options.prefix_extractor,
       prefetch_index_and_filter_in_cache, table_reader_options.skip_filters,
       table_reader_options.level, table_reader_options.immortal,
-      table_reader_options.largest_seqno, &tail_prefetch_stats_,
-      table_reader_options.block_cache_tracer);
+      table_reader_options.largest_seqno,
+      table_reader_options.force_direct_prefetch, &tail_prefetch_stats_,
+      table_reader_options.block_cache_tracer,
+      table_reader_options.max_file_size_for_l0_meta_pin);
 }
 
 TableBuilder* BlockBasedTableFactory::NewTableBuilder(
@@ -633,9 +662,9 @@ std::string ParseBlockBasedTableOption(const ConfigOptions& config_options,
     }
   }
   const auto& opt_info = iter->second;
-  Status s = opt_info.ParseOption(
-      config_options, iter->first, value,
-      reinterpret_cast<char*>(new_options) + opt_info.offset);
+  Status s =
+      opt_info.Parse(config_options, iter->first, value,
+                     reinterpret_cast<char*>(new_options) + opt_info.offset_);
   if (s.ok()) {
     return "";
   } else {
@@ -729,14 +758,14 @@ Status VerifyBlockBasedTableFactory(const ConfigOptions& config_options,
     // contain random values since they might not be initialized
     if (config_options.IsCheckEnabled(pair.second.GetSanityLevel())) {
       const char* base_addr =
-          reinterpret_cast<const char*>(&base_opt) + pair.second.offset;
+          reinterpret_cast<const char*>(&base_opt) + pair.second.offset_;
       const char* file_addr =
-          reinterpret_cast<const char*>(&file_opt) + pair.second.offset;
+          reinterpret_cast<const char*>(&file_opt) + pair.second.offset_;
 
-      if (!pair.second.MatchesOption(config_options, pair.first, base_addr,
-                                     file_addr, &mismatch) &&
-          !pair.second.MatchesByName(config_options, pair.first, base_addr,
-                                     file_addr)) {
+      if (!pair.second.AreEqual(config_options, pair.first, base_addr,
+                                file_addr, &mismatch) &&
+          !pair.second.AreEqualByName(config_options, pair.first, base_addr,
+                                      file_addr)) {
         return Status::Corruption(
             "[RocksDBOptionsParser]: "
             "failed the verification on BlockBasedTableOptions::",

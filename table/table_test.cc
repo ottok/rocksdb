@@ -378,7 +378,8 @@ class TableConstructor: public Constructor {
     return ioptions.table_factory->NewTableReader(
         TableReaderOptions(ioptions, moptions.prefix_extractor.get(), soptions,
                            internal_comparator, !kSkipFilters, !kImmortal,
-                           level_, largest_seqno_, &block_cache_tracer_),
+                           false, level_, largest_seqno_, &block_cache_tracer_,
+                           moptions.write_buffer_size),
         std::move(file_reader_), TEST_GetSink()->contents().size(),
         &table_reader_);
   }
@@ -1189,11 +1190,11 @@ class FileChecksumTestHelper {
  public:
   FileChecksumTestHelper(bool convert_to_internal_key = false)
       : convert_to_internal_key_(convert_to_internal_key) {
-    sink_ = new test::StringSink();
   }
   ~FileChecksumTestHelper() {}
 
   void CreateWriteableFile() {
+    sink_ = new test::StringSink();
     file_writer_.reset(test::GetWritableFileWriter(sink_, "" /* don't care */));
   }
 
@@ -1291,7 +1292,7 @@ class FileChecksumTestHelper {
   std::unique_ptr<RandomAccessFileReader> file_reader_;
   std::unique_ptr<TableBuilder> table_builder_;
   stl_wrappers::KVMap kv_map_;
-  test::StringSink* sink_;
+  test::StringSink* sink_ = nullptr;
 
   static uint64_t checksum_uniq_id_;
 };
@@ -3265,17 +3266,9 @@ TEST_P(BlockBasedTableTest, NoFileChecksum) {
   BlockBasedTableOptions table_options = GetBlockBasedTableOptions();
   std::unique_ptr<InternalKeyComparator> comparator(
       new InternalKeyComparator(BytewiseComparator()));
-  SequenceNumber largest_seqno = 0;
   int level = 0;
   std::vector<std::unique_ptr<IntTblPropCollectorFactory>>
       int_tbl_prop_collector_factories;
-
-  if (largest_seqno != 0) {
-    // Pretend that it's an external file written by SstFileWriter.
-    int_tbl_prop_collector_factories.emplace_back(
-        new SstFileWriterPropertiesCollectorFactory(2 /* version */,
-                                                    0 /* global_seqno*/));
-  }
   std::string column_family_name;
 
   FileChecksumTestHelper f(true);
@@ -3292,12 +3285,11 @@ TEST_P(BlockBasedTableTest, NoFileChecksum) {
   f.ResetTableBuilder(std::move(builder));
   f.AddKVtoKVMap(1000);
   f.WriteKVAndFlushTable();
-  ASSERT_STREQ(f.GetFileChecksumFuncName(),
-               kUnknownFileChecksumFuncName.c_str());
-  ASSERT_STREQ(f.GetFileChecksum().c_str(), kUnknownFileChecksum.c_str());
+  ASSERT_STREQ(f.GetFileChecksumFuncName(), kUnknownFileChecksumFuncName);
+  ASSERT_STREQ(f.GetFileChecksum().c_str(), kUnknownFileChecksum);
 }
 
-TEST_P(BlockBasedTableTest, Crc32FileChecksum) {
+TEST_P(BlockBasedTableTest, Crc32cFileChecksum) {
   FileChecksumGenCrc32cFactory* file_checksum_gen_factory =
       new FileChecksumGenCrc32cFactory();
   Options options;
@@ -3307,27 +3299,19 @@ TEST_P(BlockBasedTableTest, Crc32FileChecksum) {
   BlockBasedTableOptions table_options = GetBlockBasedTableOptions();
   std::unique_ptr<InternalKeyComparator> comparator(
       new InternalKeyComparator(BytewiseComparator()));
-  SequenceNumber largest_seqno = 0;
   int level = 0;
   std::vector<std::unique_ptr<IntTblPropCollectorFactory>>
       int_tbl_prop_collector_factories;
-
-  if (largest_seqno != 0) {
-    // Pretend that it's an external file written by SstFileWriter.
-    int_tbl_prop_collector_factories.emplace_back(
-        new SstFileWriterPropertiesCollectorFactory(2 /* version */,
-                                                    0 /* global_seqno*/));
-  }
   std::string column_family_name;
 
   FileChecksumGenContext gen_context;
   gen_context.file_name = "db/tmp";
-  std::unique_ptr<FileChecksumGenerator> checksum_crc32_gen1 =
+  std::unique_ptr<FileChecksumGenerator> checksum_crc32c_gen1 =
       options.file_checksum_gen_factory->CreateFileChecksumGenerator(
           gen_context);
   FileChecksumTestHelper f(true);
   f.CreateWriteableFile();
-  f.SetFileChecksumGenerator(checksum_crc32_gen1.release());
+  f.SetFileChecksumGenerator(checksum_crc32c_gen1.release());
   std::unique_ptr<TableBuilder> builder;
   builder.reset(ioptions.table_factory->NewTableBuilder(
       TableBuilderOptions(ioptions, moptions, *comparator,
@@ -3342,12 +3326,22 @@ TEST_P(BlockBasedTableTest, Crc32FileChecksum) {
   f.WriteKVAndFlushTable();
   ASSERT_STREQ(f.GetFileChecksumFuncName(), "FileChecksumCrc32c");
 
-  std::unique_ptr<FileChecksumGenerator> checksum_crc32_gen2 =
+  std::unique_ptr<FileChecksumGenerator> checksum_crc32c_gen2 =
       options.file_checksum_gen_factory->CreateFileChecksumGenerator(
           gen_context);
   std::string checksum;
-  ASSERT_OK(f.CalculateFileChecksum(checksum_crc32_gen2.get(), &checksum));
+  ASSERT_OK(f.CalculateFileChecksum(checksum_crc32c_gen2.get(), &checksum));
   ASSERT_STREQ(f.GetFileChecksum().c_str(), checksum.c_str());
+
+  // Unit test the generator itself for schema stability
+  std::unique_ptr<FileChecksumGenerator> checksum_crc32c_gen3 =
+      options.file_checksum_gen_factory->CreateFileChecksumGenerator(
+          gen_context);
+  const char data[] = "here is some data";
+  checksum_crc32c_gen3->Update(data, sizeof(data));
+  checksum_crc32c_gen3->Finalize();
+  checksum = checksum_crc32c_gen3->GetChecksum();
+  ASSERT_STREQ(checksum.c_str(), "\345\245\277\110");
 }
 
 // Plain table is not supported in ROCKSDB_LITE
@@ -3436,12 +3430,11 @@ TEST_F(PlainTableTest, NoFileChecksum) {
   f.ResetTableBuilder(std::move(builder));
   f.AddKVtoKVMap(1000);
   f.WriteKVAndFlushTable();
-  ASSERT_STREQ(f.GetFileChecksumFuncName(),
-               kUnknownFileChecksumFuncName.c_str());
-  EXPECT_EQ(f.GetFileChecksum(), kUnknownFileChecksum.c_str());
+  ASSERT_STREQ(f.GetFileChecksumFuncName(), kUnknownFileChecksumFuncName);
+  EXPECT_EQ(f.GetFileChecksum(), kUnknownFileChecksum);
 }
 
-TEST_F(PlainTableTest, Crc32FileChecksum) {
+TEST_F(PlainTableTest, Crc32cFileChecksum) {
   PlainTableOptions plain_table_options;
   plain_table_options.user_key_len = 20;
   plain_table_options.bloom_bits_per_key = 8;
@@ -3462,12 +3455,12 @@ TEST_F(PlainTableTest, Crc32FileChecksum) {
 
   FileChecksumGenContext gen_context;
   gen_context.file_name = "db/tmp";
-  std::unique_ptr<FileChecksumGenerator> checksum_crc32_gen1 =
+  std::unique_ptr<FileChecksumGenerator> checksum_crc32c_gen1 =
       options.file_checksum_gen_factory->CreateFileChecksumGenerator(
           gen_context);
   FileChecksumTestHelper f(true);
   f.CreateWriteableFile();
-  f.SetFileChecksumGenerator(checksum_crc32_gen1.release());
+  f.SetFileChecksumGenerator(checksum_crc32c_gen1.release());
 
   std::unique_ptr<TableBuilder> builder(factory.NewTableBuilder(
       TableBuilderOptions(
@@ -3481,11 +3474,11 @@ TEST_F(PlainTableTest, Crc32FileChecksum) {
   f.WriteKVAndFlushTable();
   ASSERT_STREQ(f.GetFileChecksumFuncName(), "FileChecksumCrc32c");
 
-  std::unique_ptr<FileChecksumGenerator> checksum_crc32_gen2 =
+  std::unique_ptr<FileChecksumGenerator> checksum_crc32c_gen2 =
       options.file_checksum_gen_factory->CreateFileChecksumGenerator(
           gen_context);
   std::string checksum;
-  ASSERT_OK(f.CalculateFileChecksum(checksum_crc32_gen2.get(), &checksum));
+  ASSERT_OK(f.CalculateFileChecksum(checksum_crc32c_gen2.get(), &checksum));
   EXPECT_STREQ(f.GetFileChecksum().c_str(), checksum.c_str());
 }
 
@@ -3547,12 +3540,12 @@ static void DoCompressionTest(CompressionType comp) {
   const MutableCFOptions moptions(options);
   c.Finish(options, ioptions, moptions, table_options, ikc, &keys, &kvmap);
 
-  ASSERT_TRUE(Between(c.ApproximateOffsetOf("abc"),       0,      0));
-  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k01"),       0,      0));
-  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k02"),       0,      0));
-  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k03"),    2000,   3500));
-  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k04"),    2000,   3500));
-  ASSERT_TRUE(Between(c.ApproximateOffsetOf("xyz"),    4000,   6500));
+  ASSERT_TRUE(Between(c.ApproximateOffsetOf("abc"), 0, 0));
+  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k01"), 0, 0));
+  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k02"), 0, 0));
+  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k03"), 2000, 3500));
+  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k04"), 2000, 3500));
+  ASSERT_TRUE(Between(c.ApproximateOffsetOf("xyz"), 4000, 7000));
   c.ResetTableReader();
 }
 

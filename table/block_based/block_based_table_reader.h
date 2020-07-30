@@ -85,6 +85,8 @@ class BlockBasedTable : public TableReader {
   // @param skip_filters Disables loading/accessing the filter block. Overrides
   //    prefetch_index_and_filter_in_cache, so filter will be skipped if both
   //    are set.
+  // @param force_direct_prefetch if true, always prefetching to RocksDB
+  //    buffer, rather than calling RandomAccessFile::Prefetch().
   static Status Open(const ImmutableCFOptions& ioptions,
                      const EnvOptions& env_options,
                      const BlockBasedTableOptions& table_options,
@@ -97,8 +99,10 @@ class BlockBasedTable : public TableReader {
                      bool skip_filters = false, int level = -1,
                      const bool immortal_table = false,
                      const SequenceNumber largest_seqno = 0,
+                     bool force_direct_prefetch = false,
                      TailPrefetchStats* tail_prefetch_stats = nullptr,
-                     BlockCacheTracer* const block_cache_tracer = nullptr);
+                     BlockCacheTracer* const block_cache_tracer = nullptr,
+                     size_t max_file_size_for_l0_meta_pin = 0);
 
   bool PrefixMayMatch(const Slice& internal_key,
                       const ReadOptions& read_options,
@@ -394,10 +398,12 @@ class BlockBasedTable : public TableReader {
                               const SliceTransform* prefix_extractor,
                               BlockCacheLookupContext* lookup_context) const;
 
+  // If force_direct_prefetch is true, always prefetching to RocksDB
+  //    buffer, rather than calling RandomAccessFile::Prefetch().
   static Status PrefetchTail(
       RandomAccessFileReader* file, uint64_t file_size,
-      TailPrefetchStats* tail_prefetch_stats, const bool prefetch_all,
-      const bool preload_all,
+      bool force_direct_prefetch, TailPrefetchStats* tail_prefetch_stats,
+      const bool prefetch_all, const bool preload_all,
       std::unique_ptr<FilePrefetchBuffer>* prefetch_buffer);
   Status ReadMetaIndexBlock(FilePrefetchBuffer* prefetch_buffer,
                             std::unique_ptr<Block>* metaindex_block,
@@ -416,6 +422,7 @@ class BlockBasedTable : public TableReader {
       FilePrefetchBuffer* prefetch_buffer, InternalIterator* meta_iter,
       BlockBasedTable* new_table, bool prefetch_all,
       const BlockBasedTableOptions& table_options, const int level,
+      size_t file_size, size_t max_file_size_for_l0_meta_pin,
       BlockCacheLookupContext* lookup_context);
 
   static BlockType GetBlockTypeForMetaBlockByName(const Slice& meta_block_name);
@@ -437,9 +444,13 @@ class BlockBasedTable : public TableReader {
   static void GenerateCachePrefix(Cache* cc, FSWritableFile* file, char* buffer,
                                   size_t* size);
 
-  // Given an iterator return its offset in file.
-  uint64_t ApproximateOffsetOf(
-      const InternalIteratorBase<IndexValue>& index_iter) const;
+  // Size of all data blocks, maybe approximate
+  uint64_t GetApproximateDataSize();
+
+  // Given an iterator return its offset in data block section of file.
+  uint64_t ApproximateDataOffsetOf(
+      const InternalIteratorBase<IndexValue>& index_iter,
+      uint64_t data_size) const;
 
   // Helper functions for DumpTable()
   Status DumpIndexBlock(WritableFile* out_file);
@@ -478,7 +489,7 @@ struct BlockBasedTable::Rep {
   Rep(const ImmutableCFOptions& _ioptions, const EnvOptions& _env_options,
       const BlockBasedTableOptions& _table_opt,
       const InternalKeyComparator& _internal_comparator, bool skip_filters,
-      int _level, const bool _immortal_table)
+      uint64_t _file_size, int _level, const bool _immortal_table)
       : ioptions(_ioptions),
         env_options(_env_options),
         table_options(_table_opt),
@@ -490,6 +501,7 @@ struct BlockBasedTable::Rep {
         whole_key_filtering(_table_opt.whole_key_filtering),
         prefix_filtering(true),
         global_seqno(kDisableGlobalSequenceNumber),
+        file_size(_file_size),
         level(_level),
         immortal_table(_immortal_table) {}
 
@@ -546,6 +558,9 @@ struct BlockBasedTable::Rep {
   // A value of kDisableGlobalSequenceNumber means that this feature is disabled
   // and every key have it's own seqno.
   SequenceNumber global_seqno;
+
+  // Size of the table file on disk
+  uint64_t file_size;
 
   // the level when the table is opened, could potentially change when trivial
   // move is involved
