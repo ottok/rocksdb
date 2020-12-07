@@ -1,3 +1,9 @@
+rocksdb (6.11.4-2) unstable; urgency=medium
+
+  * Upload to Sid.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Mon, 07 Dec 2020 22:17:04 +0100
+
 rocksdb (6.11.4-1) experimental; urgency=medium
 
   * New upstream release.
