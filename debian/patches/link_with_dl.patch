@@ -1,0 +1,20 @@
+Description: Link shared library with dynamic linking library.
+ Explicitly add -ldl to librocksdb.so.* linking.
+Author: Laszlo Boszormenyi (GCS) <gcs@debian.org>
+Bug-Debian: https://bugs.debian.org/976838
+Forwarded: <no|not-needed|url proving that it has been forwarded>
+Last-Update: 2020-12-09
+
+---
+
+--- rocksdb-6.11.4.orig/Makefile
++++ rocksdb-6.11.4/Makefile
+@@ -842,7 +842,7 @@ ifeq ($(HAVE_POWER8),1)
+ shared_all_libobjects = $(shared_libobjects) $(shared-ppc-objects)
+ endif
+ $(SHARED4): $(shared_all_libobjects)
+-	$(CXX) $(PLATFORM_SHARED_LDFLAGS)$(SHARED3) $(CXXFLAGS) $(PLATFORM_SHARED_CFLAGS) $(shared_all_libobjects) $(LDFLAGS) -o $@
++	$(CXX) $(PLATFORM_SHARED_LDFLAGS)$(SHARED3) $(CXXFLAGS) $(PLATFORM_SHARED_CFLAGS) $(shared_all_libobjects) $(LDFLAGS) -ldl -o $@
+ 
+ endif  # PLATFORM_SHARED_EXT
+ 

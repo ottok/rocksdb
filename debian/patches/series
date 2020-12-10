@@ -2,3 +2,4 @@ install_dir-is-destdir.patch
 build_reproducible.patch
 verbose_build.patch
 fix_db_test.patch
+link_with_dl.patch
