@@ -16,10 +16,6 @@ Copyright: Copyright (C) 2011 Dain Sundstrom <dain@iq80.com>,
  Copyright (C) 2011 FuseSource Corp. https://fusesource.com
 License: Apache-2.0
 
-Files: java/rocksjni.pom
-Copyright: Copyright (C) 2013- Facebook, Inc.
-License: Apache-2.0
-
 Files: debian/*
 Copyright: Copyright (C) 2015- Laszlo Boszormenyi (GCS) <gcs@debian.org>
 License: GPL-3+

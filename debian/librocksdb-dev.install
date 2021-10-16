@@ -1,4 +1,4 @@
 usr/include/rocksdb/
-usr/lib/lib*.a
-usr/lib/lib*.so
-usr/lib/lib*.so.?
+usr/lib/${DEB_HOST_MULTIARCH}/lib*.a
+usr/lib/${DEB_HOST_MULTIARCH}/lib*.so
+usr/lib/${DEB_HOST_MULTIARCH}/cmake/

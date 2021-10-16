@@ -1,9 +1,13 @@
-rocksdb (6.11.4-3+deb11u1) bullseye; urgency=medium
+rocksdb (6.25.3-1) experimental; urgency=medium
 
-  [ Daniel Leidert <dleidert@debian.org> ]
-  * Fix illegal instruction on arm64 (closes: #1015224).
+  * New upstream release (closes: #984325).
+  * Switch to CMake build system.
+  * Library transition from librocksdb6.11 to librocksdb6.25 .
+  * Update watch file.
+  * Update debhelper level to 13 .
+  * Update Standards-Version to 4.6.0 .
 
- -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sat, 27 Aug 2022 08:59:02 +0200
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sat, 16 Oct 2021 19:07:15 +0200
 
 rocksdb (6.11.4-3) unstable; urgency=medium
 

@@ -1,5 +1,4 @@
-../../cache_bench             /usr/bin
-../../db_bench                /usr/bin
-../../ldb                     /usr/bin
-../../persistent_cache_bench  /usr/bin
-../../sst_dump                /usr/bin
+obj-${DEB_HOST_MULTIARCH}/cache_bench             /usr/bin
+obj-${DEB_HOST_MULTIARCH}/db_bench                /usr/bin
+obj-${DEB_HOST_MULTIARCH}/tools/ldb               /usr/bin
+obj-${DEB_HOST_MULTIARCH}/tools/sst_dump          /usr/bin

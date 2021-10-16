@@ -22,7 +22,8 @@ void LDBCommandRunner::PrintHelp(const LDBOptions& ldb_options,
              "=<full_path_to_db_directory> when necessary\n");
   ret.append("\n");
   ret.append("commands can optionally specify --" + LDBCommand::ARG_ENV_URI +
-             "=<uri_of_environment> if necessary\n\n");
+             "=<uri_of_environment> or --" + LDBCommand::ARG_FS_URI +
+             "=<uri_of_filesystem> if necessary\n\n");
   ret.append(
       "The following optional parameters control if keys/values are "
       "input/output as hex or as plain strings:\n");
@@ -87,17 +88,20 @@ void LDBCommandRunner::PrintHelp(const LDBOptions& ldb_options,
   DBLoaderCommand::Help(ret);
   ManifestDumpCommand::Help(ret);
   FileChecksumDumpCommand::Help(ret);
+  GetPropertyCommand::Help(ret);
   ListColumnFamiliesCommand::Help(ret);
   CreateColumnFamilyCommand::Help(ret);
   DropColumnFamilyCommand::Help(ret);
   DBFileDumperCommand::Help(ret);
   InternalDumpCommand::Help(ret);
+  DBLiveFilesMetadataDumperCommand::Help(ret);
   RepairCommand::Help(ret);
   BackupCommand::Help(ret);
   RestoreCommand::Help(ret);
   CheckPointCommand::Help(ret);
   WriteExternalSstFilesCommand::Help(ret);
   IngestExternalSstFilesCommand::Help(ret);
+  UnsafeRemoveSstFileCommand::Help(ret);
 
   fprintf(to_stderr ? stderr : stdout, "%s\n", ret.c_str());
 }
@@ -107,7 +111,10 @@ int LDBCommandRunner::RunCommand(
     const LDBOptions& ldb_options,
     const std::vector<ColumnFamilyDescriptor>* column_families) {
   if (argc <= 2) {
-    if (std::string(argv[1]) == "--version") {
+    if (argc <= 1) {
+      PrintHelp(ldb_options, argv[0], /*to_stderr*/ true);
+      return 1;
+    } else if (std::string(argv[1]) == "--version") {
       printf("ldb from RocksDB %d.%d.%d\n", ROCKSDB_MAJOR, ROCKSDB_MINOR,
              ROCKSDB_PATCH);
       return 0;

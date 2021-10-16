@@ -1,0 +1,28 @@
+Description: <short summary of the patch>
+ .
+Forwarded: no
+Author: Laszlo Boszormenyi (GCS) <gcs@debian.org>
+Last-Update: 2021-10-16
+
+---
+
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1012,7 +1012,7 @@ if(ROCKSDB_BUILD_SHARED)
+     set_target_properties(${ROCKSDB_SHARED_LIB} PROPERTIES
+                           LINKER_LANGUAGE CXX
+                           VERSION ${rocksdb_VERSION}
+-                          SOVERSION ${rocksdb_VERSION_MAJOR}
++                          SOVERSION ${rocksdb_VERSION_LIB}
+                           OUTPUT_NAME "rocksdb${ARTIFACT_SUFFIX}")
+   endif()
+ endif()
+--- a/cmake/modules/ReadVersion.cmake
++++ b/cmake/modules/ReadVersion.cmake
+@@ -6,5 +6,6 @@ function(get_rocksdb_version version_var
+     string(REGEX MATCH "#define ROCKSDB_${component} ([0-9]+)" _ ${version_header_file})
+     set(ROCKSDB_VERSION_${component} ${CMAKE_MATCH_1})
+   endforeach()
++  set(rocksdb_VERSION_LIB "${ROCKSDB_VERSION_MAJOR}.${ROCKSDB_VERSION_MINOR}" PARENT_SCOPE)
+   set(${version_var} "${ROCKSDB_VERSION_MAJOR}.${ROCKSDB_VERSION_MINOR}.${ROCKSDB_VERSION_PATCH}" PARENT_SCOPE)
+ endfunction()

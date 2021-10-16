@@ -10,9 +10,9 @@
 // Thread-safe (provides internal synchronization)
 
 #pragma once
+#include <cstdint>
 #include <string>
 #include <vector>
-#include <stdint.h>
 
 #include "db/dbformat.h"
 #include "db/range_del_aggregator.h"
@@ -48,9 +48,11 @@ class HistogramImpl;
 // ioptions.row_cache
 class TableCache {
  public:
-  TableCache(const ImmutableCFOptions& ioptions,
-             const FileOptions& storage_options, Cache* cache,
-             BlockCacheTracer* const block_cache_tracer);
+  TableCache(const ImmutableOptions& ioptions,
+             const FileOptions* storage_options, Cache* cache,
+             BlockCacheTracer* const block_cache_tracer,
+             const std::shared_ptr<IOTracer>& io_tracer,
+             const std::string& db_session_id);
   ~TableCache();
 
   // Return an iterator for the specified file number (the corresponding
@@ -60,6 +62,7 @@ class TableCache {
   // the returned iterator.  The returned "*table_reader_ptr" object is owned
   // by the cache and should not be deleted, and is valid for as long as the
   // returned iterator is live.
+  // @param options Must outlive the returned iterator.
   // @param range_del_agg If non-nullptr, adds range deletions to the
   //    aggregator. If an error occurs, returns it in a NewErrorInternalIterator
   // @param for_compaction If true, a new TableReader may be allocated (but
@@ -129,7 +132,7 @@ class TableCache {
   // Find table reader
   // @param skip_filters Disables loading/accessing the filter block
   // @param level == -1 means not specified
-  Status FindTable(const FileOptions& toptions,
+  Status FindTable(const ReadOptions& ro, const FileOptions& toptions,
                    const InternalKeyComparator& internal_comparator,
                    const FileDescriptor& file_fd, Cache::Handle**,
                    const SliceTransform* prefix_extractor = nullptr,
@@ -181,7 +184,7 @@ class TableCache {
 
   Cache* get_cache() const { return cache_; }
 
-  // Capacity of the backing Cache that indicates inifinite TableCache capacity.
+  // Capacity of the backing Cache that indicates infinite TableCache capacity.
   // For example when max_open_files is -1 we set the backing Cache to this.
   static const int kInfiniteCapacity = 0x400000;
 
@@ -195,7 +198,7 @@ class TableCache {
 
  private:
   // Build a table reader
-  Status GetTableReader(const FileOptions& file_options,
+  Status GetTableReader(const ReadOptions& ro, const FileOptions& file_options,
                         const InternalKeyComparator& internal_comparator,
                         const FileDescriptor& fd, bool sequential_mode,
                         bool record_read_stats, HistogramImpl* file_read_hist,
@@ -218,13 +221,15 @@ class TableCache {
   bool GetFromRowCache(const Slice& user_key, IterKey& row_cache_key,
                        size_t prefix_size, GetContext* get_context);
 
-  const ImmutableCFOptions& ioptions_;
+  const ImmutableOptions& ioptions_;
   const FileOptions& file_options_;
   Cache* const cache_;
   std::string row_cache_id_;
   bool immortal_tables_;
   BlockCacheTracer* const block_cache_tracer_;
   Striped<port::Mutex, Slice> loader_mutex_;
+  std::shared_ptr<IOTracer> io_tracer_;
+  std::string db_session_id_;
 };
 
 }  // namespace ROCKSDB_NAMESPACE

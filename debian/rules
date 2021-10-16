@@ -15,18 +15,35 @@ ifeq ($(DEB_HOST_ARCH),armel)
 	export DEB_CXXFLAGS_MAINT_APPEND= -mfloat-abi=softfp
 endif
 
-override_dh_auto_build:
-	PORTABLE=1 dh_auto_build -- all
-	PORTABLE=1 dh_auto_build -- shared_lib
+# make build verbose
+export AM_DEFAULT_VERBOSITY=1
+
+override_dh_auto_configure:
+	dh_auto_configure -O--buildsystem=cmake \
+		 -- \
+		 -DWITH_BZ2=ON \
+		 -DWITH_ZLIB=ON \
+		 -DWITH_ZSTD=ON \
+		 -DWITH_SNAPPY=ON \
+		 -DROCKSDB_BUILD_SHARED=ON \
+		 -DWITH_BENCHMARK_TOOLS=ON \
+		 -DWITH_CORE_TOOLS=ON \
+		 -DWITH_TOOLS=ON \
+		 -DWITH_TESTS=ON \
+		 -DPORTABLE=ON \
+		 -DFAIL_ON_WARNINGS=OFF
+
+override_dh_auto_test:
+	echo Test is no-op as running for hours on a normal PC
 
 override_dh_auto_install:
-	dh_auto_install --destdir=$(CURDIR)/debian/tmp/usr/
+	dh_auto_install -O--buildsystem=cmake --destdir=$(CURDIR)/debian/tmp/
 
 override_dh_missing:
 	dh_missing --list-missing
 
 %:
-	dh $@
+	dh $@ --buildsystem=cmake
 
-.PHONY: override_dh_auto_build override_dh_auto_test \
+.PHONY: override_dh_auto_configure override_dh_auto_test \
 	override_dh_auto_install override_dh_missing

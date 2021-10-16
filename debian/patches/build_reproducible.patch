@@ -2,17 +2,17 @@ diff --git a/Makefile b/Makefile
 index a98aa5b..e58088d 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -283,7 +283,12 @@ LDFLAGS += $(PLATFORM_LDFLAGS)
- # If NO_UPDATE_BUILD_VERSION is set we don't update util/build_version.cc, but
- # the file needs to already exist or else the build will fail
- ifndef NO_UPDATE_BUILD_VERSION
--date := $(shell date +%F)
+@@ -670,7 +670,12 @@ ifndef NO_UPDATE_BUILD_VERSION
+ 
+ # By default, use the current date-time as the date.  If there are no changes,
+ # we will use the last commit date instead.
+-build_date := $(shell date "+%Y-%m-%d %T")
 +DATE_FMT = %Y-%m-%d
 +ifdef SOURCE_DATE_EPOCH
-+    date ?= $(shell date -u -d "@$(SOURCE_DATE_EPOCH)" "+$(DATE_FMT)"  2>/dev/null || date -u -r "$(SOURCE_DATE_EPOCH)" "+$(DATE_FMT)" 2>/dev/null || date -u "+$(DATE_FMT)")
++    build_date ?= $(shell date -u -d "@$(SOURCE_DATE_EPOCH)" "+$(DATE_FMT)"  2>/dev/null || date -u -r "$(SOURCE_DATE_EPOCH)" "+$(DATE_FMT)" 2>/dev/null || date -u "+$(DATE_FMT)")
 +else
-+    date ?= $(shell date "+$(DATE_FMT)")
++    build_date ?= $(shell date "+$(DATE_FMT)")
 +endif
+ 
  ifdef FORCE_GIT_SHA
  	git_sha := $(FORCE_GIT_SHA)
- else

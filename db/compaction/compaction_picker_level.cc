@@ -49,14 +49,16 @@ class LevelCompactionBuilder {
                          CompactionPicker* compaction_picker,
                          LogBuffer* log_buffer,
                          const MutableCFOptions& mutable_cf_options,
-                         const ImmutableCFOptions& ioptions)
+                         const ImmutableOptions& ioptions,
+                         const MutableDBOptions& mutable_db_options)
       : cf_name_(cf_name),
         vstorage_(vstorage),
         earliest_mem_seqno_(earliest_mem_seqno),
         compaction_picker_(compaction_picker),
         log_buffer_(log_buffer),
         mutable_cf_options_(mutable_cf_options),
-        ioptions_(ioptions) {}
+        ioptions_(ioptions),
+        mutable_db_options_(mutable_db_options) {}
 
   // Pick and return a compaction.
   Compaction* PickCompaction();
@@ -119,7 +121,8 @@ class LevelCompactionBuilder {
   CompactionReason compaction_reason_ = CompactionReason::kUnknown;
 
   const MutableCFOptions& mutable_cf_options_;
-  const ImmutableCFOptions& ioptions_;
+  const ImmutableOptions& ioptions_;
+  const MutableDBOptions& mutable_db_options_;
   // Pick a path ID to place a newly generated file, with its level
   static uint32_t GetPathId(const ImmutableCFOptions& ioptions,
                             const MutableCFOptions& mutable_cf_options,
@@ -323,8 +326,8 @@ Compaction* LevelCompactionBuilder::PickCompaction() {
 
 Compaction* LevelCompactionBuilder::GetCompaction() {
   auto c = new Compaction(
-      vstorage_, ioptions_, mutable_cf_options_, std::move(compaction_inputs_),
-      output_level_,
+      vstorage_, ioptions_, mutable_cf_options_, mutable_db_options_,
+      std::move(compaction_inputs_), output_level_,
       MaxFileSizeForLevel(mutable_cf_options_, output_level_,
                           ioptions_.compaction_style, vstorage_->base_level(),
                           ioptions_.level_compaction_dynamic_level_bytes),
@@ -333,6 +336,7 @@ Compaction* LevelCompactionBuilder::GetCompaction() {
       GetCompressionType(ioptions_, vstorage_, mutable_cf_options_,
                          output_level_, vstorage_->base_level()),
       GetCompressionOptions(mutable_cf_options_, vstorage_, output_level_),
+      Temperature::kUnknown,
       /* max_subcompactions */ 0, std::move(grandparents_), is_manual_,
       start_level_score_, false /* deletion_compaction */, compaction_reason_);
 
@@ -381,7 +385,7 @@ uint32_t LevelCompactionBuilder::GetPathId(
           if (ioptions.level_compaction_dynamic_level_bytes) {
             // Currently, level_compaction_dynamic_level_bytes is ignored when
             // multiple db paths are specified. https://github.com/facebook/
-            // rocksdb/blob/master/db/column_family.cc.
+            // rocksdb/blob/main/db/column_family.cc.
             // Still, adding this check to avoid accidentally using
             // max_bytes_for_level_multiplier_additional
             level_size = static_cast<uint64_t>(
@@ -497,10 +501,11 @@ bool LevelCompactionBuilder::PickIntraL0Compaction() {
 
 Compaction* LevelCompactionPicker::PickCompaction(
     const std::string& cf_name, const MutableCFOptions& mutable_cf_options,
-    VersionStorageInfo* vstorage, LogBuffer* log_buffer,
-    SequenceNumber earliest_mem_seqno) {
+    const MutableDBOptions& mutable_db_options, VersionStorageInfo* vstorage,
+    LogBuffer* log_buffer, SequenceNumber earliest_mem_seqno) {
   LevelCompactionBuilder builder(cf_name, vstorage, earliest_mem_seqno, this,
-                                 log_buffer, mutable_cf_options, ioptions_);
+                                 log_buffer, mutable_cf_options, ioptions_,
+                                 mutable_db_options);
   return builder.PickCompaction();
 }
 }  // namespace ROCKSDB_NAMESPACE
