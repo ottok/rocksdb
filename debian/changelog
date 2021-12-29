@@ -1,3 +1,10 @@
+rocksdb (6.25.3-2) experimental; urgency=medium
+
+  * Use DEB_TARGET_GNU_TYPE for rocksdb-tools installation targets.
+  * Add missing timer implementation for various architectures.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Wed, 29 Dec 2021 18:43:06 +0100
+
 rocksdb (6.25.3-1) experimental; urgency=medium
 
   * New upstream release (closes: #984325).

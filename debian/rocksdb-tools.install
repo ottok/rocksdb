@@ -1,4 +1,4 @@
-obj-${DEB_HOST_MULTIARCH}/cache_bench             /usr/bin
-obj-${DEB_HOST_MULTIARCH}/db_bench                /usr/bin
-obj-${DEB_HOST_MULTIARCH}/tools/ldb               /usr/bin
-obj-${DEB_HOST_MULTIARCH}/tools/sst_dump          /usr/bin
+obj-${DEB_TARGET_GNU_TYPE}/cache_bench             /usr/bin
+obj-${DEB_TARGET_GNU_TYPE}/db_bench                /usr/bin
+obj-${DEB_TARGET_GNU_TYPE}/tools/ldb               /usr/bin
+obj-${DEB_TARGET_GNU_TYPE}/tools/sst_dump          /usr/bin
