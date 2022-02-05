@@ -1,0 +1,24 @@
+From 5e06b8305fada9f0e7ba8c54993a6642c0a7f7de Mon Sep 17 00:00:00 2001
+From: Dominik Peuscher <dominik.peuscher@check24.de>
+Date: Sun, 16 Jan 2022 22:24:06 +0100
+Subject: [PATCH] #8609 Add armv7 support
+
+---
+ .../lock/range/range_tree/lib/portability/toku_time.h         | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h b/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h
+index 225e3fa7211..cd5f935f1bb 100644
+--- a/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h
++++ b/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h
+@@ -131,6 +131,10 @@ static inline tokutime_t toku_time_now(v
+   uint64_t result;
+   __asm __volatile__("mrs %[rt], cntvct_el0" : [ rt ] "=r"(result));
+   return result;
++#elif defined(__arm__)
++  uint32_t lo, hi;
++  __asm __volatile__("mrrc p15, 1, %[lo], %[hi], c14" : [ lo ] "=r" (lo), [hi] "=r" (hi));
++  return (uint64_t)hi << 32 | lo;
+ #elif defined(__powerpc__) && defined(__GLIBC__)
+   return __ppc_get_timebase();
+ #elif defined(__powerpc64__) || defined(__ppc64__)

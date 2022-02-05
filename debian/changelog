@@ -1,3 +1,10 @@
+rocksdb (6.25.3-3) experimental; urgency=medium
+
+  * Add armel timer implementation.
+  * Fix dependency of librocksdb-dev (closes: #1004665).
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sat, 05 Feb 2022 14:19:34 +0100
+
 rocksdb (6.25.3-2) experimental; urgency=medium
 
   * Use DEB_TARGET_GNU_TYPE for rocksdb-tools installation targets.

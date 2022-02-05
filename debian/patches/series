@@ -6,3 +6,4 @@ library_version.patch
 ppc64.patch
 mips.patch
 arm.patch
+armv7_support.patch
