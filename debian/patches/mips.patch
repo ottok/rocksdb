@@ -3,7 +3,7 @@ implement timer implementation for mips platform
 Signed-off-by: Khem Raj <raj.khem@gmail.com>
 --- a/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h
 +++ b/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h
-@@ -155,7 +155,12 @@ static inline tokutime_t toku_time_now(v
+@@ -159,7 +159,12 @@ static inline tokutime_t toku_time_now(v
    __asm __volatile__("rdcycle %0" : "=r"(result));
    return result;
  #endif

@@ -15,6 +15,7 @@
 
 #include "db/arena_wrapped_db_iter.h"
 #include "db/db_impl/db_impl.h"
+#include "logging/logging.h"
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
 #include "rocksdb/utilities/transaction_db.h"
@@ -245,6 +246,7 @@ Status WritePreparedTxnDB::Get(const ReadOptions& options,
                                                   backed_by_snapshot))) {
     return res;
   } else {
+    res.PermitUncheckedError();
     WPRecordTick(TXN_GET_TRY_AGAIN);
     return Status::TryAgain();
   }

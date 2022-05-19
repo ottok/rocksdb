@@ -79,8 +79,8 @@ class Compaction {
              CompressionOptions compression_opts,
              Temperature output_temperature, uint32_t max_subcompactions,
              std::vector<FileMetaData*> grandparents,
-             bool manual_compaction = false, double score = -1,
-             bool deletion_compaction = false,
+             bool manual_compaction = false, const std::string& trim_ts = "",
+             double score = -1, bool deletion_compaction = false,
              CompactionReason compaction_reason = CompactionReason::kUnknown);
 
   // No copying allowed
@@ -208,6 +208,8 @@ class Compaction {
   // Was this compaction triggered manually by the client?
   bool is_manual_compaction() const { return is_manual_compaction_; }
 
+  std::string trim_ts() const { return trim_ts_; }
+
   // Used when allow_trivial_move option is set in
   // Universal compaction. If all the input files are
   // non overlapping, then is_trivial_move_ variable
@@ -292,7 +294,7 @@ class Compaction {
 
   int GetInputBaseLevel() const;
 
-  CompactionReason compaction_reason() { return compaction_reason_; }
+  CompactionReason compaction_reason() const { return compaction_reason_; }
 
   const std::vector<FileMetaData*>& grandparents() const {
     return grandparents_;
@@ -304,7 +306,10 @@ class Compaction {
 
   uint32_t max_subcompactions() const { return max_subcompactions_; }
 
-  uint64_t MinInputFileOldestAncesterTime() const;
+  // start and end are sub compact range. Null if no boundary.
+  // This is used to filter out some input files' ancester's time range.
+  uint64_t MinInputFileOldestAncesterTime(const InternalKey* start,
+                                          const InternalKey* end) const;
 
   // Called by DBImpl::NotifyOnCompactionCompleted to make sure number of
   // compaction begin and compaction completion callbacks match.
@@ -381,6 +386,9 @@ class Compaction {
 
   // Is this compaction requested by the client?
   const bool is_manual_compaction_;
+
+  // The data with timestamp > trim_ts_ will be removed
+  const std::string trim_ts_;
 
   // True if we can do trivial move in Universal multi level
   // compaction

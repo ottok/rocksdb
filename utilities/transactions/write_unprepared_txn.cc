@@ -6,6 +6,7 @@
 #ifndef ROCKSDB_LITE
 
 #include "utilities/transactions/write_unprepared_txn.h"
+
 #include "db/db_impl/db_impl.h"
 #include "util/cast_util.h"
 #include "utilities/transactions/write_unprepared_txn_db.h"
@@ -549,11 +550,17 @@ Status WriteUnpreparedTxn::CommitInternal() {
   assert(s.ok());
 
   const bool for_recovery = use_only_the_last_commit_time_batch_for_recovery_;
-  if (!empty && for_recovery) {
+  if (!empty) {
     // When not writing to memtable, we can still cache the latest write batch.
     // The cached batch will be written to memtable in WriteRecoverableState
     // during FlushMemTable
-    WriteBatchInternal::SetAsLatestPersistentState(working_batch);
+    if (for_recovery) {
+      WriteBatchInternal::SetAsLatestPersistentState(working_batch);
+    } else {
+      return Status::InvalidArgument(
+          "Commit-time-batch can only be used if "
+          "use_only_the_last_commit_time_batch_for_recovery is true");
+    }
   }
 
   const bool includes_data = !empty && !for_recovery;
@@ -968,6 +975,7 @@ Status WriteUnpreparedTxn::Get(const ReadOptions& options,
              wupt_db_->ValidateSnapshot(snap_seq, backed_by_snapshot))) {
     return res;
   } else {
+    res.PermitUncheckedError();
     wupt_db_->WPRecordTick(TXN_GET_TRY_AGAIN);
     return Status::TryAgain();
   }
@@ -1024,9 +1032,10 @@ Status WriteUnpreparedTxn::ValidateSnapshot(ColumnFamilyHandle* column_family,
 
   WriteUnpreparedTxnReadCallback snap_checker(
       wupt_db_, snap_seq, min_uncommitted, unprep_seqs_, kBackedByDBSnapshot);
-  return TransactionUtil::CheckKeyForConflicts(db_impl_, cfh, key.ToString(),
-                                               snap_seq, false /* cache_only */,
-                                               &snap_checker, min_uncommitted);
+  // TODO(yanqin): Support user-defined timestamp.
+  return TransactionUtil::CheckKeyForConflicts(
+      db_impl_, cfh, key.ToString(), snap_seq, /*ts=*/nullptr,
+      false /* cache_only */, &snap_checker, min_uncommitted);
 }
 
 const std::map<SequenceNumber, size_t>&
