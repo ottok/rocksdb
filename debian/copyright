@@ -20,8 +20,12 @@ Files: debian/*
 Copyright: Copyright (C) 2015- Laszlo Boszormenyi (GCS) <gcs@debian.org>
 License: GPL-3+
 
-Files: debian/patches/0001-range_tree-Implement-toku_time_now-for-rv32-rv64-in-.patch debian/patches/ppc64.patch debian/patches/mips.patch debian/patches/arm.patch
+Files: debian/patches/0001-range_tree-Implement-toku_time_now-for-rv32-rv64-in-.patch debian/patches/ppc64.patch debian/patches/mips.patch debian/patches/arm.patch debian/patches/0001-replace-old-sync-with-new-atomic-builtin-equivalents.patch
 Copyright: Copyright (C) 2021 Khem Raj <raj.khem@gmail.com>
+License: GPL-2 or Apache-2.0
+
+Files: debian/patches/armv7_support.patch
+Copyright: Copyright (C) 2022 Dominik Peuscher <dominik.peuscher@check24.de>
 License: GPL-2 or Apache-2.0
 
 License: Apache-2.0

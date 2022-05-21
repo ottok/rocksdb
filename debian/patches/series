@@ -6,4 +6,5 @@ library_version.patch
 ppc64.patch
 mips.patch
 arm.patch
-#armv7_support.patch
+armv7_support.patch
+0001-replace-old-sync-with-new-atomic-builtin-equivalents.patch

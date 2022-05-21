@@ -1,3 +1,10 @@
+rocksdb (7.2.2-2) experimental; urgency=medium
+
+  * Add patch for ARMv7 support.
+  * Add patch for replacing old sync with new atomic builtin equivalents.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sat, 21 May 2022 19:47:37 +0200
+
 rocksdb (7.2.2-1) experimental; urgency=medium
 
   * New upstream release.

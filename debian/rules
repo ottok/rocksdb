@@ -15,6 +15,10 @@ ifeq ($(DEB_HOST_ARCH),armel)
 	export DEB_CXXFLAGS_MAINT_APPEND= -mfloat-abi=softfp
 endif
 
+ifeq ($(DEB_HOST_ARCH),mipsel)
+	export DEB_LDFLAGS_MAINT_APPEND= -latomic
+endif
+
 # make build verbose
 export AM_DEFAULT_VERBOSITY=1
 
