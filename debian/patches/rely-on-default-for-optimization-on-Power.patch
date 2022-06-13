@@ -1,0 +1,46 @@
+Description: Don't optimize without knowing the target system on Power
+ Upstream's CMake configuration assumes having gcc P9 optimizations flags means
+ we are compiling for P9.
+ On ppc64*, gcc can produce binaries optimized for P8, P9 or P10 atm.
+ But on Debian we want to be compatible with all and default to P8.
+ ---
+ $ gcc -Q --help=target|grep -i power
+  -mpower10                   		[disabled]
+  -mpower10-fusion            		[disabled]
+  -mpower8-fusion             		[enabled]
+  -mpower8-fusion-sign        		[disabled]
+  -mpower8-vector             		[enabled]
+  -mpower9-minmax             		[disabled]
+  -mpower9-misc               		[disabled]
+  -mpower9-vector             		[disabled]
+  -mpowerpc                   		[ignored]
+  -mpowerpc-gfxopt            		[enabled]
+  -mpowerpc-gpopt             		[enabled]
+  -mpowerpc64                 		[enabled]
+  ---
+ Altivec is a different story, as it is enabled by default on ppc64el but not
+ on ppc64. So leaving it for now.
+Author: Frédéric Bonnard <frediz@debian.org>
+Forwarded: no
+---
+This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -203,17 +203,6 @@
+ 
+ include(CheckCCompilerFlag)
+ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(powerpc|ppc)64")
+-  CHECK_C_COMPILER_FLAG("-mcpu=power9" HAS_POWER9)
+-  if(HAS_POWER9)
+-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mcpu=power9 -mtune=power9")
+-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mcpu=power9 -mtune=power9")
+-  else()
+-    CHECK_C_COMPILER_FLAG("-mcpu=power8" HAS_POWER8)
+-    if(HAS_POWER8)
+-      set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mcpu=power8 -mtune=power8")
+-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mcpu=power8 -mtune=power8")
+-    endif(HAS_POWER8)
+-  endif(HAS_POWER9)
+   CHECK_C_COMPILER_FLAG("-maltivec" HAS_ALTIVEC)
+   if(HAS_ALTIVEC)
+     message(STATUS " HAS_ALTIVEC yes")
