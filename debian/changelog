@@ -1,3 +1,9 @@
+rocksdb (7.2.2-5) unstable; urgency=medium
+
+  * Build with LZ4 support (closes: #1012629, #1012804).
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Thu, 16 Jun 2022 18:29:56 +0200
+
 rocksdb (7.2.2-4) unstable; urgency=medium
 
   [ Frédéric Bonnard <frediz@debian.org> ]

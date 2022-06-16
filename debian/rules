@@ -26,6 +26,7 @@ override_dh_auto_configure:
 	dh_auto_configure -O--buildsystem=cmake \
 		 -- \
 		 -DWITH_BZ2=ON \
+		 -DWITH_LZ4=ON \
 		 -DWITH_ZLIB=ON \
 		 -DWITH_ZSTD=ON \
 		 -DWITH_SNAPPY=ON \
