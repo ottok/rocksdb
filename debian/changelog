@@ -1,3 +1,11 @@
+rocksdb (7.3.1-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Update patches.
+  * Library transition from librocksdb7.2 to librocksdb7.3 .
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sun, 19 Jun 2022 15:39:09 +0200
+
 rocksdb (7.2.2-5) unstable; urgency=medium
 
   * Build with LZ4 support (closes: #1012629, #1012804).

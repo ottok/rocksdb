@@ -2,10 +2,9 @@ build_reproducible.patch
 fix_db_test.patch
 no_rpath.patch
 library_version.patch
-0001-range_tree-Implement-toku_time_now-for-rv32-rv64-in-.patch
 ppc64.patch
+armv7_support.patch
 mips.patch
 arm.patch
-armv7_support.patch
 0001-replace-old-sync-with-new-atomic-builtin-equivalents.patch
 rely-on-default-for-optimization-on-Power.patch
