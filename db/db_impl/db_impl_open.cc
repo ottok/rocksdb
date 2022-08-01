@@ -27,8 +27,9 @@
 
 namespace ROCKSDB_NAMESPACE {
 Options SanitizeOptions(const std::string& dbname, const Options& src,
-                        bool read_only) {
-  auto db_options = SanitizeOptions(dbname, DBOptions(src), read_only);
+                        bool read_only, Status* logger_creation_s) {
+  auto db_options =
+      SanitizeOptions(dbname, DBOptions(src), read_only, logger_creation_s);
   ImmutableDBOptions immutable_db_options(db_options);
   auto cf_options =
       SanitizeOptions(immutable_db_options, ColumnFamilyOptions(src));
@@ -36,7 +37,7 @@ Options SanitizeOptions(const std::string& dbname, const Options& src,
 }
 
 DBOptions SanitizeOptions(const std::string& dbname, const DBOptions& src,
-                          bool read_only) {
+                          bool read_only, Status* logger_creation_s) {
   DBOptions result(src);
 
   if (result.env == nullptr) {
@@ -59,6 +60,9 @@ DBOptions SanitizeOptions(const std::string& dbname, const DBOptions& src,
     if (!s.ok()) {
       // No place suitable for logging
       result.info_log = nullptr;
+      if (logger_creation_s) {
+        *logger_creation_s = s;
+      }
     }
   }
 
@@ -524,7 +528,8 @@ Status DBImpl::Recover(
       return s;
     }
   }
-  s = SetDBId(read_only, recovery_ctx);
+  s = SetupDBId(read_only, recovery_ctx);
+  ROCKS_LOG_INFO(immutable_db_options_.info_log, "DB ID: %s\n", db_id_.c_str());
   if (s.ok() && !read_only) {
     s = DeleteUnreferencedSstFiles(recovery_ctx);
   }
@@ -557,10 +562,6 @@ Status DBImpl::Recover(
     default_cf_handle_ = new ColumnFamilyHandleImpl(
         versions_->GetColumnFamilySet()->GetDefault(), this, &mutex_);
     default_cf_internal_stats_ = default_cf_handle_->cfd()->internal_stats();
-    // TODO(Zhongyi): handle single_column_family_mode_ when
-    // persistent_stats is enabled
-    single_column_family_mode_ =
-        versions_->GetColumnFamilySet()->NumberOfColumnFamilies() == 1;
 
     // Recover from all newer log files than the ones named in the
     // descriptor (new log files may have been added by the previous
@@ -1006,9 +1007,14 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
 
       // We create a new batch and initialize with a valid prot_info_ to store
       // the data checksums
-      WriteBatch batch(0, 0, 8, 0);
+      WriteBatch batch;
 
       status = WriteBatchInternal::SetContents(&batch, record);
+      if (!status.ok()) {
+        return status;
+      }
+      status = WriteBatchInternal::UpdateProtectionInfo(&batch,
+                                                        8 /* bytes_per_key */);
       if (!status.ok()) {
         return status;
       }
@@ -1424,7 +1430,6 @@ Status DBImpl::RestoreAliveLogFiles(const std::vector<uint64_t>& wal_numbers) {
     total_log_size_ += log.size;
     alive_log_files_.push_back(log);
   }
-  alive_log_files_tail_ = alive_log_files_.rbegin();
   if (two_write_queues_) {
     log_write_mutex_.Unlock();
   }
@@ -1745,6 +1750,13 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
   }
 
   DBImpl* impl = new DBImpl(db_options, dbname, seq_per_batch, batch_per_txn);
+  if (!impl->immutable_db_options_.info_log) {
+    s = impl->init_logger_creation_s_;
+    delete impl;
+    return s;
+  } else {
+    assert(impl->init_logger_creation_s_.ok());
+  }
   s = impl->env_->CreateDirIfMissing(impl->immutable_db_options_.GetWalDir());
   if (s.ok()) {
     std::vector<std::string> paths;
@@ -1806,7 +1818,6 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
       }
       impl->alive_log_files_.push_back(
           DBImpl::LogFileNumberSize(impl->logfile_number_));
-      impl->alive_log_files_tail_ = impl->alive_log_files_.rbegin();
       if (impl->two_write_queues_) {
         impl->log_write_mutex_.Unlock();
       }
@@ -1827,8 +1838,12 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
         WriteOptions write_options;
         uint64_t log_used, log_size;
         log::Writer* log_writer = impl->logs_.back().writer;
+        LogFileNumberSize& log_file_number_size = impl->alive_log_files_.back();
+
+        assert(log_writer->get_log_number() == log_file_number_size.number);
+        impl->mutex_.AssertHeld();
         s = impl->WriteToWAL(empty_batch, log_writer, &log_used, &log_size,
-                             Env::IO_TOTAL, /*with_db_mutex==*/true);
+                             Env::IO_TOTAL, log_file_number_size);
         if (s.ok()) {
           // Need to fsync, otherwise it might get lost after a power reset.
           s = impl->FlushWAL(false);
@@ -1957,21 +1972,24 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
     // vast majority of all files), we'll pass the size to SstFileManager.
     // For all other files SstFileManager will query the size from filesystem.
 
-    std::vector<LiveFileMetaData> metadata;
-
-    // TODO: Once GetLiveFilesMetaData supports blob files, update the logic
-    // below to get known_file_sizes for blob files.
-    impl->mutex_.Lock();
-    impl->versions_->GetLiveFilesMetaData(&metadata);
-    impl->mutex_.Unlock();
+    std::vector<ColumnFamilyMetaData> metadata;
+    impl->GetAllColumnFamilyMetaData(&metadata);
 
     std::unordered_map<std::string, uint64_t> known_file_sizes;
     for (const auto& md : metadata) {
-      std::string name = md.name;
-      if (!name.empty() && name[0] == '/') {
-        name = name.substr(1);
+      for (const auto& lmd : md.levels) {
+        for (const auto& fmd : lmd.files) {
+          known_file_sizes[fmd.relative_filename] = fmd.size;
+        }
       }
-      known_file_sizes[name] = md.size;
+      for (const auto& bmd : md.blob_files) {
+        std::string name = bmd.blob_file_name;
+        // The BlobMetaData.blob_file_name may start with "/".
+        if (!name.empty() && name[0] == '/') {
+          name = name.substr(1);
+        }
+        known_file_sizes[name] = bmd.blob_file_size;
+      }
     }
 
     std::vector<std::string> paths;
