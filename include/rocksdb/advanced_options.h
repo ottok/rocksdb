@@ -55,6 +55,11 @@ enum CompactionPri : char {
   // and its size is the smallest. It in many cases can optimize write
   // amplification.
   kMinOverlappingRatio = 0x3,
+  // Keeps a cursor(s) of the successor of the file (key range) was/were
+  // compacted before, and always picks the next files (key range) in that
+  // level. The file picking process will cycle through all the files in a
+  // round-robin manner.
+  kRoundRobin = 0x4,
 };
 
 struct CompactionOptionsFIFO {
@@ -112,7 +117,7 @@ struct CompressionOptions {
   //
   // The amount of data buffered can be limited by `max_dict_buffer_bytes`. This
   // buffered memory is charged to the block cache when there is a block cache.
-  // If block cache insertion fails with `Status::Incomplete` (i.e., it is
+  // If block cache insertion fails with `Status::MemoryLimit` (i.e., it is
   // full), we finalize the dictionary with whatever data we have and then stop
   // buffering.
   //
@@ -339,6 +344,23 @@ struct AdvancedColumnFamilyOptions {
   //
   // Dynamically changeable through SetOptions() API
   size_t inplace_update_num_locks = 10000;
+
+  // [experimental]
+  // Used to activate or deactive the Mempurge feature (memtable garbage
+  // collection). (deactivated by default). At every flush, the total useful
+  // payload (total entries minus garbage entries) is estimated as a ratio
+  // [useful payload bytes]/[size of a memtable (in bytes)]. This ratio is then
+  // compared to this `threshold` value:
+  //     - if ratio<threshold: the flush is replaced by a mempurge operation
+  //     - else: a regular flush operation takes place.
+  // Threshold values:
+  //   0.0: mempurge deactivated (default).
+  //   1.0: recommended threshold value.
+  //   >1.0 : aggressive mempurge.
+  //   0 < threshold < 1.0: mempurge triggered only for very low useful payload
+  //   ratios.
+  // [experimental]
+  double experimental_mempurge_threshold = 0.0;
 
   // existing_value - pointer to previous value (from both memtable and sst).
   //                  nullptr if key doesn't exist
@@ -851,6 +873,15 @@ struct AdvancedColumnFamilyOptions {
   //
   // Dynamically changeable through the SetOptions() API
   Temperature bottommost_temperature = Temperature::kUnknown;
+
+  // EXPERIMENTAL
+  // The feature is still in development and is incomplete.
+  // If this option is set, when data insert time is within this time range, it
+  // will be precluded from the last level.
+  // 0 means no key will be precluded from the last level.
+  //
+  // Default: 0 (disable the feature)
+  uint64_t preclude_last_level_data_seconds = 0;
 
   // When set, large values (blobs) are written to separate blob files, and
   // only pointers to them are stored in SST files. This can reduce write

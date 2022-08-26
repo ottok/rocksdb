@@ -719,6 +719,12 @@ Status DBImpl::VerifySstUniqueIdInManifest() {
       status = version->VerifySstUniqueIds();
       mutex_.Lock();
       version->Unref();
+      if (!status.ok()) {
+        ROCKS_LOG_WARN(immutable_db_options_.info_log,
+                       "SST unique id mismatch in column family \"%s\": %s",
+                       cfd->GetName().c_str(), status.ToString().c_str());
+        return status;
+      }
     }
   }
   return status;
@@ -850,6 +856,131 @@ Status DBImpl::LogAndApplyForRecovery(const RecoveryContext& recovery_ctx) {
   return s;
 }
 
+void DBImpl::InvokeWalFilterIfNeededOnColumnFamilyToWalNumberMap() {
+#ifndef ROCKSDB_LITE
+  if (immutable_db_options_.wal_filter == nullptr) {
+    return;
+  }
+  assert(immutable_db_options_.wal_filter != nullptr);
+  WalFilter& wal_filter = *(immutable_db_options_.wal_filter);
+
+  std::map<std::string, uint32_t> cf_name_id_map;
+  std::map<uint32_t, uint64_t> cf_lognumber_map;
+  assert(versions_);
+  assert(versions_->GetColumnFamilySet());
+  for (auto cfd : *versions_->GetColumnFamilySet()) {
+    assert(cfd);
+    cf_name_id_map.insert(std::make_pair(cfd->GetName(), cfd->GetID()));
+    cf_lognumber_map.insert(std::make_pair(cfd->GetID(), cfd->GetLogNumber()));
+  }
+
+  wal_filter.ColumnFamilyLogNumberMap(cf_lognumber_map, cf_name_id_map);
+#endif  // !ROCKSDB_LITE
+}
+
+bool DBImpl::InvokeWalFilterIfNeededOnWalRecord(uint64_t wal_number,
+                                                const std::string& wal_fname,
+                                                log::Reader::Reporter& reporter,
+                                                Status& status,
+                                                bool& stop_replay,
+                                                WriteBatch& batch) {
+#ifndef ROCKSDB_LITE
+  if (immutable_db_options_.wal_filter == nullptr) {
+    return true;
+  }
+  assert(immutable_db_options_.wal_filter != nullptr);
+  WalFilter& wal_filter = *(immutable_db_options_.wal_filter);
+
+  WriteBatch new_batch;
+  bool batch_changed = false;
+
+  bool process_current_record = true;
+
+  WalFilter::WalProcessingOption wal_processing_option =
+      wal_filter.LogRecordFound(wal_number, wal_fname, batch, &new_batch,
+                                &batch_changed);
+
+  switch (wal_processing_option) {
+    case WalFilter::WalProcessingOption::kContinueProcessing:
+      // do nothing, proceeed normally
+      break;
+    case WalFilter::WalProcessingOption::kIgnoreCurrentRecord:
+      // skip current record
+      process_current_record = false;
+      break;
+    case WalFilter::WalProcessingOption::kStopReplay:
+      // skip current record and stop replay
+      process_current_record = false;
+      stop_replay = true;
+      break;
+    case WalFilter::WalProcessingOption::kCorruptedRecord: {
+      status = Status::Corruption("Corruption reported by Wal Filter ",
+                                  wal_filter.Name());
+      MaybeIgnoreError(&status);
+      if (!status.ok()) {
+        process_current_record = false;
+        reporter.Corruption(batch.GetDataSize(), status);
+      }
+      break;
+    }
+    default: {
+      // logical error which should not happen. If RocksDB throws, we would
+      // just do `throw std::logic_error`.
+      assert(false);
+      status = Status::NotSupported(
+          "Unknown WalProcessingOption returned by Wal Filter ",
+          wal_filter.Name());
+      MaybeIgnoreError(&status);
+      if (!status.ok()) {
+        // Ignore the error with current record processing.
+        stop_replay = true;
+      }
+      break;
+    }
+  }
+
+  if (!process_current_record) {
+    return false;
+  }
+
+  if (batch_changed) {
+    // Make sure that the count in the new batch is
+    // within the orignal count.
+    int new_count = WriteBatchInternal::Count(&new_batch);
+    int original_count = WriteBatchInternal::Count(&batch);
+    if (new_count > original_count) {
+      ROCKS_LOG_FATAL(
+          immutable_db_options_.info_log,
+          "Recovering log #%" PRIu64
+          " mode %d log filter %s returned "
+          "more records (%d) than original (%d) which is not allowed. "
+          "Aborting recovery.",
+          wal_number, static_cast<int>(immutable_db_options_.wal_recovery_mode),
+          wal_filter.Name(), new_count, original_count);
+      status = Status::NotSupported(
+          "More than original # of records "
+          "returned by Wal Filter ",
+          wal_filter.Name());
+      return false;
+    }
+    // Set the same sequence number in the new_batch
+    // as the original batch.
+    WriteBatchInternal::SetSequence(&new_batch,
+                                    WriteBatchInternal::Sequence(&batch));
+    batch = new_batch;
+  }
+  return true;
+#else   // !ROCKSDB_LITE
+  (void)wal_number;
+  (void)wal_fname;
+  (void)reporter;
+  (void)status;
+  (void)stop_replay;
+  (void)batch;
+  return true;
+#endif  // ROCKSDB_LITE
+}
+
 // REQUIRES: wal_numbers are sorted in ascending order
 Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
                                SequenceNumber* next_sequence, bool read_only,
@@ -892,20 +1023,8 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
     stream.EndArray();
   }
 
-#ifndef ROCKSDB_LITE
-  if (immutable_db_options_.wal_filter != nullptr) {
-    std::map<std::string, uint32_t> cf_name_id_map;
-    std::map<uint32_t, uint64_t> cf_lognumber_map;
-    for (auto cfd : *versions_->GetColumnFamilySet()) {
-      cf_name_id_map.insert(std::make_pair(cfd->GetName(), cfd->GetID()));
-      cf_lognumber_map.insert(
-          std::make_pair(cfd->GetID(), cfd->GetLogNumber()));
-    }
-
-    immutable_db_options_.wal_filter->ColumnFamilyLogNumberMap(cf_lognumber_map,
-                                                               cf_name_id_map);
-  }
-#endif
+  // No-op for immutable_db_options_.wal_filter == nullptr.
+  InvokeWalFilterIfNeededOnColumnFamilyToWalNumberMap();
 
   bool stop_replay_by_wal_filter = false;
   bool stop_replay_for_corruption = false;
@@ -996,9 +1115,11 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
 
     TEST_SYNC_POINT_CALLBACK("DBImpl::RecoverLogFiles:BeforeReadWal",
                              /*arg=*/nullptr);
+    uint64_t record_checksum;
     while (!stop_replay_by_wal_filter &&
            reader.ReadRecord(&record, &scratch,
-                             immutable_db_options_.wal_recovery_mode) &&
+                             immutable_db_options_.wal_recovery_mode,
+                             &record_checksum) &&
            status.ok()) {
       if (record.size() < WriteBatchInternal::kHeader) {
         reporter.Corruption(record.size(),
@@ -1014,8 +1135,13 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
       if (!status.ok()) {
         return status;
       }
-      status = WriteBatchInternal::UpdateProtectionInfo(&batch,
-                                                        8 /* bytes_per_key */);
+      TEST_SYNC_POINT_CALLBACK(
+          "DBImpl::RecoverLogFiles:BeforeUpdateProtectionInfo:batch", &batch);
+      TEST_SYNC_POINT_CALLBACK(
+          "DBImpl::RecoverLogFiles:BeforeUpdateProtectionInfo:checksum",
+          &record_checksum);
+      status = WriteBatchInternal::UpdateProtectionInfo(
+          &batch, 8 /* bytes_per_key */, &record_checksum);
       if (!status.ok()) {
         return status;
       }
@@ -1037,83 +1163,13 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
         }
       }
 
-#ifndef ROCKSDB_LITE
-      if (immutable_db_options_.wal_filter != nullptr) {
-        WriteBatch new_batch;
-        bool batch_changed = false;
-
-        WalFilter::WalProcessingOption wal_processing_option =
-            immutable_db_options_.wal_filter->LogRecordFound(
-                wal_number, fname, batch, &new_batch, &batch_changed);
-
-        switch (wal_processing_option) {
-          case WalFilter::WalProcessingOption::kContinueProcessing:
-            // do nothing, proceeed normally
-            break;
-          case WalFilter::WalProcessingOption::kIgnoreCurrentRecord:
-            // skip current record
-            continue;
-          case WalFilter::WalProcessingOption::kStopReplay:
-            // skip current record and stop replay
-            stop_replay_by_wal_filter = true;
-            continue;
-          case WalFilter::WalProcessingOption::kCorruptedRecord: {
-            status =
-                Status::Corruption("Corruption reported by Wal Filter ",
-                                   immutable_db_options_.wal_filter->Name());
-            MaybeIgnoreError(&status);
-            if (!status.ok()) {
-              reporter.Corruption(record.size(), status);
-              continue;
-            }
-            break;
-          }
-          default: {
-            assert(false);  // unhandled case
-            status = Status::NotSupported(
-                "Unknown WalProcessingOption returned"
-                " by Wal Filter ",
-                immutable_db_options_.wal_filter->Name());
-            MaybeIgnoreError(&status);
-            if (!status.ok()) {
-              return status;
-            } else {
-              // Ignore the error with current record processing.
-              continue;
-            }
-          }
-        }
-
-        if (batch_changed) {
-          // Make sure that the count in the new batch is
-          // within the orignal count.
-          int new_count = WriteBatchInternal::Count(&new_batch);
-          int original_count = WriteBatchInternal::Count(&batch);
-          if (new_count > original_count) {
-            ROCKS_LOG_FATAL(
-                immutable_db_options_.info_log,
-                "Recovering log #%" PRIu64
-                " mode %d log filter %s returned "
-                "more records (%d) than original (%d) which is not allowed. "
-                "Aborting recovery.",
-                wal_number,
-                static_cast<int>(immutable_db_options_.wal_recovery_mode),
-                immutable_db_options_.wal_filter->Name(), new_count,
-                original_count);
-            status = Status::NotSupported(
-                "More than original # of records "
-                "returned by Wal Filter ",
-                immutable_db_options_.wal_filter->Name());
-            return status;
-          }
-          // Set the same sequence number in the new_batch
-          // as the original batch.
-          WriteBatchInternal::SetSequence(&new_batch,
-                                          WriteBatchInternal::Sequence(&batch));
-          batch = new_batch;
-        }
+      // For the default case of wal_filter == nullptr, always performs no-op
+      // and returns true.
+      if (!InvokeWalFilterIfNeededOnWalRecord(wal_number, fname, reporter,
+                                              status, stop_replay_by_wal_filter,
+                                              batch)) {
+        continue;
       }
-#endif  // ROCKSDB_LITE
 
       // If column family was not found, it might mean that the WAL write
       // batch references to the column family that was dropped after the
@@ -1505,17 +1561,19 @@ Status DBImpl::WriteLevel0TableForRecovery(int job_id, ColumnFamilyData* cfd,
           GetCompressionFlush(*cfd->ioptions(), mutable_cf_options),
           mutable_cf_options.compression_opts, cfd->GetID(), cfd->GetName(),
           0 /* level */, false /* is_bottommost */,
-          TableFileCreationReason::kRecovery, current_time,
-          0 /* oldest_key_time */, 0 /* file_creation_time */, db_id_,
-          db_session_id_, 0 /* target_file_size */, meta.fd.GetNumber());
+          TableFileCreationReason::kRecovery, 0 /* oldest_key_time */,
+          0 /* file_creation_time */, db_id_, db_session_id_,
+          0 /* target_file_size */, meta.fd.GetNumber());
+      SeqnoToTimeMapping empty_seqno_time_mapping;
       s = BuildTable(
           dbname_, versions_.get(), immutable_db_options_, tboptions,
           file_options_for_compaction_, cfd->table_cache(), iter.get(),
           std::move(range_del_iters), &meta, &blob_file_additions,
           snapshot_seqs, earliest_write_conflict_snapshot, kMaxSequenceNumber,
           snapshot_checker, paranoid_file_checks, cfd->internal_stats(), &io_s,
-          io_tracer_, BlobFileCreationReason::kRecovery, &event_logger_, job_id,
-          Env::IO_HIGH, nullptr /* table_properties */, write_hint,
+          io_tracer_, BlobFileCreationReason::kRecovery,
+          empty_seqno_time_mapping, &event_logger_, job_id, Env::IO_HIGH,
+          nullptr /* table_properties */, write_hint,
           nullptr /*full_history_ts_low*/, &blob_callback_);
       LogFlush(immutable_db_options_.info_log);
       ROCKS_LOG_DEBUG(immutable_db_options_.info_log,
@@ -2056,6 +2114,10 @@ Status DBImpl::Open(const DBOptions& db_options, const std::string& dbname,
   }
   if (s.ok()) {
     s = impl->StartPeriodicWorkScheduler();
+  }
+
+  if (s.ok()) {
+    s = impl->RegisterRecordSeqnoTimeWorker();
   }
   if (!s.ok()) {
     for (auto* h : *handles) {
