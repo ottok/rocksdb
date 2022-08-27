@@ -1,0 +1,225 @@
+From 29f7bbef995bdf83098963799c66af742e95373f Mon Sep 17 00:00:00 2001
+From: Yuqi Gu <yuqi.gu@arm.com>
+Date: Tue, 22 Sep 2020 10:39:54 -0700
+Subject: [PATCH] Fix RocksDB SIGILL error on Raspberry PI 4 (#7233)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Summary:
+Issue：https://github.com/facebook/rocksdb/issues/7042
+
+No PMULL runtime check will lead to SIGILL on a Raspberry pi 4.
+
+Leverage 'getauxval' to get Hardware-Cap to detect whether target
+platform does support PMULL or not in runtime.
+
+Consider the condition that the target platform does support crc32 but not support PMULL.
+In this condition, the code should leverage the crc32 instruction
+rather than skip all hardware crc32 instruction.
+
+Pull Request resolved: https://github.com/facebook/rocksdb/pull/7233
+
+Reviewed By: jay-zhuang
+
+Differential Revision: D23790116
+
+fbshipit-source-id: a3ebd821fbd4a38dd2f59064adbb7c3013ee8140
+---
+ util/crc32c.cc       |   6 +++
+ util/crc32c_arm64.cc | 111 ++++++++++++++++++++++++++-----------------
+ util/crc32c_arm64.h  |   1 +
+ 3 files changed, 74 insertions(+), 44 deletions(-)
+
+Index: rocksdb-6.11.4/util/crc32c.cc
+===================================================================
+--- rocksdb-6.11.4.orig/util/crc32c.cc
++++ rocksdb-6.11.4/util/crc32c.cc
+@@ -41,6 +41,10 @@
+ 
+ #endif
+ 
++#if defined(__linux__) && defined(HAVE_ARM64_CRC)
++bool pmull_runtime_flag = false;
++#endif
++
+ namespace ROCKSDB_NAMESPACE {
+ namespace crc32c {
+ 
+@@ -494,6 +498,7 @@ std::string IsFastCrc32Supported() {
+   if (crc32c_runtime_check()) {
+     has_fast_crc = true;
+     arch = "Arm64";
++    pmull_runtime_flag = crc32c_pmull_runtime_check();
+   } else {
+     has_fast_crc = false;
+     arch = "Arm64";
+@@ -1224,6 +1229,7 @@ static inline Function Choose_Extend() {
+   return isAltiVec() ? ExtendPPCImpl : ExtendImpl<Slow_CRC32>;
+ #elif defined(__linux__) && defined(HAVE_ARM64_CRC)
+   if(crc32c_runtime_check()) {
++    pmull_runtime_flag = crc32c_pmull_runtime_check();
+     return ExtendARMImpl;
+   } else {
+     return ExtendImpl<Slow_CRC32>;
+Index: rocksdb-6.11.4/util/crc32c_arm64.cc
+===================================================================
+--- rocksdb-6.11.4.orig/util/crc32c_arm64.cc
++++ rocksdb-6.11.4/util/crc32c_arm64.cc
+@@ -14,6 +14,9 @@
+ #ifndef HWCAP_CRC32
+ #define HWCAP_CRC32 (1 << 7)
+ #endif
++#ifndef HWCAP_PMULL
++#define HWCAP_PMULL (1 << 4)
++#endif
+ 
+ #ifdef HAVE_ARM64_CRYPTO
+ /* unfolding to compute 8 * 3 = 24 bytes parallelly */
+@@ -35,6 +38,8 @@
+   } while (0)
+ #endif
+ 
++extern bool pmull_runtime_flag;
++
+ uint32_t crc32c_runtime_check(void) {
+ #ifdef ROCKSDB_AUXV_GETAUXVAL_PRESENT
+   uint64_t auxv = getauxval(AT_HWCAP);
+@@ -44,6 +49,15 @@ uint32_t crc32c_runtime_check(void) {
+ #endif
+ }
+ 
++bool crc32c_pmull_runtime_check(void) {
++#ifdef ROCKSDB_AUXV_GETAUXVAL_PRESENT
++  uint64_t auxv = getauxval(AT_HWCAP);
++  return (auxv & HWCAP_PMULL) != 0;
++#else
++  return false;
++#endif
++}
++
+ #ifdef ROCKSDB_UBSAN_RUN
+ #if defined(__clang__)
+ __attribute__((__no_sanitize__("alignment")))
+@@ -58,6 +72,13 @@ uint32_t crc32c_arm64(uint32_t crc, unsi
+   int length = (int)len;
+   crc ^= 0xffffffff;
+ 
++  /*
++   * Pmull runtime check here.
++   * Raspberry Pi supports crc32 but doesn't support pmull.
++   * Skip Crc32c Parallel computation if no crypto extension available.
++   */
++  if (pmull_runtime_flag) {
++/* Macro (HAVE_ARM64_CRYPTO) is used for compiling check  */
+ #ifdef HAVE_ARM64_CRYPTO
+ /* Crc32c Parallel computation
+  *   Algorithm comes from Intel whitepaper:
+@@ -68,51 +89,53 @@ uint32_t crc32c_arm64(uint32_t crc, unsi
+  *   One Block: 42(BLK_LENGTH) * 8(step length: crc32c_u64) bytes
+  */
+ #define BLK_LENGTH 42
+-  while (length >= 1024) {
+-    uint64_t t0, t1;
+-    uint32_t crc0 = 0, crc1 = 0, crc2 = 0;
+-
+-    /* Parallel Param:
+-     *   k0 = CRC32(x ^ (42 * 8 * 8 * 2 - 1));
+-     *   k1 = CRC32(x ^ (42 * 8 * 8 - 1));
+-     */
+-    uint32_t k0 = 0xe417f38a, k1 = 0x8f158014;
+-
+-    /* Prefetch data for following block to avoid cache miss */
+-    PREF1KL1((uint8_t *)buf64, 1024);
+-
+-    /* First 8 byte for better pipelining */
+-    crc0 = crc32c_u64(crc, *buf64++);
+-
+-    /* 3 blocks crc32c parallel computation
+-     * Macro unfolding to compute parallelly
+-     * 168 * 6 = 1008 (bytes)
+-     */
+-    CRC32C7X24BYTES(0);
+-    CRC32C7X24BYTES(1);
+-    CRC32C7X24BYTES(2);
+-    CRC32C7X24BYTES(3);
+-    CRC32C7X24BYTES(4);
+-    CRC32C7X24BYTES(5);
+-    buf64 += (BLK_LENGTH * 3);
+-
+-    /* Last 8 bytes */
+-    crc = crc32c_u64(crc2, *buf64++);
+-
+-    t0 = (uint64_t)vmull_p64(crc0, k0);
+-    t1 = (uint64_t)vmull_p64(crc1, k1);
+-
+-    /* Merge (crc0, crc1, crc2) -> crc */
+-    crc1 = crc32c_u64(0, t1);
+-    crc ^= crc1;
+-    crc0 = crc32c_u64(0, t0);
+-    crc ^= crc0;
++    while (length >= 1024) {
++      uint64_t t0, t1;
++      uint32_t crc0 = 0, crc1 = 0, crc2 = 0;
++
++      /* Parallel Param:
++       *   k0 = CRC32(x ^ (42 * 8 * 8 * 2 - 1));
++       *   k1 = CRC32(x ^ (42 * 8 * 8 - 1));
++       */
++      uint32_t k0 = 0xe417f38a, k1 = 0x8f158014;
++
++      /* Prefetch data for following block to avoid cache miss */
++      PREF1KL1((uint8_t *)buf64, 1024);
++
++      /* First 8 byte for better pipelining */
++      crc0 = crc32c_u64(crc, *buf64++);
++
++      /* 3 blocks crc32c parallel computation
++       * Macro unfolding to compute parallelly
++       * 168 * 6 = 1008 (bytes)
++       */
++      CRC32C7X24BYTES(0);
++      CRC32C7X24BYTES(1);
++      CRC32C7X24BYTES(2);
++      CRC32C7X24BYTES(3);
++      CRC32C7X24BYTES(4);
++      CRC32C7X24BYTES(5);
++      buf64 += (BLK_LENGTH * 3);
++
++      /* Last 8 bytes */
++      crc = crc32c_u64(crc2, *buf64++);
++
++      t0 = (uint64_t)vmull_p64(crc0, k0);
++      t1 = (uint64_t)vmull_p64(crc1, k1);
++
++      /* Merge (crc0, crc1, crc2) -> crc */
++      crc1 = crc32c_u64(0, t1);
++      crc ^= crc1;
++      crc0 = crc32c_u64(0, t0);
++      crc ^= crc0;
+ 
+-    length -= 1024;
+-  }
++      length -= 1024;
++    }
+ 
+-  if (length == 0) return crc ^ (0xffffffffU);
++    if (length == 0) return crc ^ (0xffffffffU);
+ #endif
++  }  // if Pmull runtime check here
++
+   buf8 = (const uint8_t *)buf64;
+   while (length >= 8) {
+     crc = crc32c_u64(crc, *(const uint64_t *)buf8);
+Index: rocksdb-6.11.4/util/crc32c_arm64.h
+===================================================================
+--- rocksdb-6.11.4.orig/util/crc32c_arm64.h
++++ rocksdb-6.11.4/util/crc32c_arm64.h
+@@ -35,6 +35,7 @@
+ 
+ extern uint32_t crc32c_arm64(uint32_t crc, unsigned char const *data, unsigned len);
+ extern uint32_t crc32c_runtime_check(void);
++extern bool crc32c_pmull_runtime_check(void);
+ 
+ #ifdef __ARM_FEATURE_CRYPTO
+ #define HAVE_ARM64_CRYPTO

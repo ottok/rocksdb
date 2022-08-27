@@ -3,3 +3,4 @@ build_reproducible.patch
 verbose_build.patch
 fix_db_test.patch
 link_with_dl.patch
+fix_illegal_instruction.patch

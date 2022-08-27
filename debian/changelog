@@ -1,3 +1,10 @@
+rocksdb (6.11.4-3+deb11u1) bullseye; urgency=medium
+
+  [ Daniel Leidert <dleidert@debian.org> ]
+  * Fix illegal instruction on arm64 (closes: #1015224).
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sat, 27 Aug 2022 08:59:02 +0200
+
 rocksdb (6.11.4-3) unstable; urgency=medium
 
   * Explicitly link shared library with dynamic linking library
