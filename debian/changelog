@@ -1,3 +1,10 @@
+rocksdb (7.6.0-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Library transition from librocksdb7.5 to librocksdb7.6 .
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Fri, 23 Sep 2022 14:48:51 +0200
+
 rocksdb (7.5.3-1) experimental; urgency=medium
 
   * New upstream release.

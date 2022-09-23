@@ -4,6 +4,7 @@ LIB_SOURCES =                                                   \
   cache/cache_entry_roles.cc                                    \
   cache/cache_key.cc                                            \
   cache/cache_reservation_manager.cc                            \
+  cache/charged_cache.cc                                        \
   cache/clock_cache.cc                                          \
   cache/fast_lru_cache.cc                                       \
   cache/lru_cache.cc                                            \
@@ -89,6 +90,7 @@ LIB_SOURCES =                                                   \
   db/wal_edit.cc                                                \
   db/wal_manager.cc                                             \
   db/wide/wide_column_serialization.cc                          \
+  db/wide/wide_columns.cc                                       \
   db/write_batch.cc                                             \
   db/write_batch_base.cc                                        \
   db/write_controller.cc                                        \
