@@ -1,3 +1,9 @@
+rocksdb (7.6.0-2) unstable; urgency=medium
+
+  * Upload to Sid.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Wed, 28 Sep 2022 19:04:48 +0200
+
 rocksdb (7.6.0-1) experimental; urgency=medium
 
   * New upstream release.
