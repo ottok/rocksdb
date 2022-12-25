@@ -1796,15 +1796,14 @@ TEST_P(CompressionFailuresTest, CompressionFailures) {
         });
   } else if (compression_failure_type_ == kTestDecompressionFail) {
     ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
-        "UncompressBlockContentsForCompressionType:TamperWithReturnValue",
-        [](void* arg) {
+        "UncompressBlockData:TamperWithReturnValue", [](void* arg) {
           Status* ret = static_cast<Status*>(arg);
           ASSERT_OK(*ret);
           *ret = Status::Corruption("kTestDecompressionFail");
         });
   } else if (compression_failure_type_ == kTestDecompressionCorruption) {
     ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
-        "UncompressBlockContentsForCompressionType:"
+        "UncompressBlockData:"
         "TamperWithDecompressionOutput",
         [](void* arg) {
           BlockContents* contents = static_cast<BlockContents*>(arg);
@@ -1872,7 +1871,7 @@ TEST_P(CompressionFailuresTest, CompressionFailures) {
               "Could not decompress: kTestDecompressionFail");
   } else if (compression_failure_type_ == kTestDecompressionCorruption) {
     ASSERT_EQ(std::string(s.getState()),
-              "Decompressed block did not match raw block");
+              "Decompressed block did not match pre-compression block");
   }
 }
 
@@ -2380,9 +2379,15 @@ TEST_F(DBTest2, MaxCompactionBytesTest) {
   }
   ASSERT_OK(dbfull()->TEST_WaitForCompact());
 
-  // Output files to L1 are cut to three pieces, according to
-  // options.max_compaction_bytes
-  ASSERT_EQ("0,3,8", FilesPerLevel(0));
+  // Output files to L1 are cut to 4 pieces, according to
+  // options.max_compaction_bytes (300K)
+  // There are 8 files on L2 (grandparents level), each one is 100K. The first
+  // file overlaps with a, b which max_compaction_bytes is less than 300K, the
+  // second one overlaps with d, e, which is also less than 300K. Including any
+  // extra grandparent file will make the future compaction larger than 300K.
+  // L1: [  1  ] [  2 ]  [  3  ] [ 4 ]
+  // L2: [a] [b] [c] [d] [e] [f] [g] [h]
+  ASSERT_EQ("0,4,8", FilesPerLevel(0));
 }
 
 static void UniqueIdCallback(void* arg) {
@@ -6918,7 +6923,7 @@ TEST_F(DBTest2, LastLevelTemperatureUniversal) {
   ASSERT_EQ(size, 0);
   ASSERT_EQ(iostats->file_io_stats_by_temperature.hot_file_read_count, 0);
   ASSERT_EQ(iostats->file_io_stats_by_temperature.warm_file_read_count, 0);
-  ASSERT_EQ(iostats->file_io_stats_by_temperature.hot_file_read_count, 0);
+  ASSERT_EQ(iostats->file_io_stats_by_temperature.cold_file_read_count, 0);
   ASSERT_EQ(options.statistics->getTickerCount(HOT_FILE_READ_BYTES), 0);
   ASSERT_EQ(options.statistics->getTickerCount(WARM_FILE_READ_BYTES), 0);
   ASSERT_EQ(options.statistics->getTickerCount(COLD_FILE_READ_BYTES), 0);
@@ -7499,6 +7504,80 @@ TEST_F(DBTest2, SstUniqueIdVerifyMultiCFs) {
   options.verify_sst_unique_id_in_manifest = true;
   auto s = TryReopenWithColumnFamilies({"default", "one", "two"}, options);
   ASSERT_TRUE(s.IsCorruption());
+}
+
+TEST_F(DBTest2, BestEffortsRecoveryWithSstUniqueIdVerification) {
+  const auto tamper_with_uniq_id = [&](void* arg) {
+    auto props = static_cast<TableProperties*>(arg);
+    assert(props);
+    // update table property session_id to a different one
+    props->db_session_id = DBImpl::GenerateDbSessionId(nullptr);
+  };
+
+  const auto assert_db = [&](size_t expected_count,
+                             const std::string& expected_v) {
+    std::unique_ptr<Iterator> it(db_->NewIterator(ReadOptions()));
+    size_t cnt = 0;
+    for (it->SeekToFirst(); it->Valid(); it->Next(), ++cnt) {
+      ASSERT_EQ(std::to_string(cnt), it->key());
+      ASSERT_EQ(expected_v, it->value());
+    }
+    ASSERT_EQ(expected_count, cnt);
+  };
+
+  const int num_l0_compaction_trigger = 8;
+  const int num_l0 = num_l0_compaction_trigger - 1;
+  Options options = CurrentOptions();
+  options.level0_file_num_compaction_trigger = num_l0_compaction_trigger;
+
+  for (int k = 0; k < num_l0; ++k) {
+    // Allow mismatch for now
+    options.verify_sst_unique_id_in_manifest = false;
+
+    DestroyAndReopen(options);
+
+    constexpr size_t num_keys_per_file = 10;
+    for (int i = 0; i < num_l0; ++i) {
+      for (size_t j = 0; j < num_keys_per_file; ++j) {
+        ASSERT_OK(Put(std::to_string(j), "v" + std::to_string(i)));
+      }
+      if (i == k) {
+        SyncPoint::GetInstance()->DisableProcessing();
+        SyncPoint::GetInstance()->SetCallBack(
+            "PropertyBlockBuilder::AddTableProperty:Start",
+            tamper_with_uniq_id);
+        SyncPoint::GetInstance()->EnableProcessing();
+      }
+      ASSERT_OK(Flush());
+    }
+
+    options.verify_sst_unique_id_in_manifest = true;
+    Status s = TryReopen(options);
+    ASSERT_TRUE(s.IsCorruption());
+
+    options.best_efforts_recovery = true;
+    Reopen(options);
+    assert_db(k == 0 ? 0 : num_keys_per_file, "v" + std::to_string(k - 1));
+
+    // Reopen with regular recovery
+    options.best_efforts_recovery = false;
+    Reopen(options);
+    assert_db(k == 0 ? 0 : num_keys_per_file, "v" + std::to_string(k - 1));
+
+    SyncPoint::GetInstance()->DisableProcessing();
+    SyncPoint::GetInstance()->ClearAllCallBacks();
+
+    for (size_t i = 0; i < num_keys_per_file; ++i) {
+      ASSERT_OK(Put(std::to_string(i), "v"));
+    }
+    ASSERT_OK(Flush());
+    Reopen(options);
+    {
+      for (size_t i = 0; i < num_keys_per_file; ++i) {
+        ASSERT_EQ("v", Get(std::to_string(i)));
+      }
+    }
+  }
 }
 
 #ifndef ROCKSDB_LITE

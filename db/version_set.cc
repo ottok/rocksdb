@@ -1239,7 +1239,7 @@ void LevelIterator::Seek(const Slice& target) {
         prefix_extractor_ != nullptr && !read_options_.total_order_seek &&
         !read_options_.auto_prefix_mode &&
         file_index_ < flevel_->num_files - 1) {
-      size_t ts_sz = user_comparator_.timestamp_size();
+      size_t ts_sz = user_comparator_.user_comparator()->timestamp_size();
       Slice target_user_key_without_ts =
           ExtractUserKeyAndStripTimestamp(target, ts_sz);
       Slice next_file_first_user_key_without_ts =
@@ -1632,6 +1632,7 @@ Status Version::TablesRangeTombstoneSummary(int max_entries_to_print,
       if (tombstone_iter) {
         tombstone_iter->SeekToFirst();
 
+        // TODO: print timestamp
         while (tombstone_iter->Valid() && num_entries_left > 0) {
           ss << "start: " << tombstone_iter->start_key().ToString(true)
              << " end: " << tombstone_iter->end_key().ToString(true)
@@ -2832,6 +2833,7 @@ Status Version::MultiGetAsync(
         std::vector<Status> statuses = folly::coro::blockingWait(
             folly::coro::collectAllRange(std::move(mget_tasks))
                 .scheduleOn(&range->context()->executor()));
+        mget_tasks.clear();
         for (Status stat : statuses) {
           if (!stat.ok()) {
             s = stat;
@@ -4564,6 +4566,10 @@ std::string Version::DebugString(bool hex, bool print_stats) const {
     AppendNumberTo(&r, level);
     r.append(" --- version# ");
     AppendNumberTo(&r, version_number_);
+    if (storage_info_.compact_cursor_[level].Valid()) {
+      r.append(" --- compact_cursor: ");
+      r.append(storage_info_.compact_cursor_[level].DebugString(hex));
+    }
     r.append(" ---\n");
     const std::vector<FileMetaData*>& files = storage_info_.files_[level];
     for (size_t i = 0; i < files.size(); i++) {
@@ -5518,7 +5524,7 @@ Status VersionSet::GetCurrentManifestPath(const std::string& dbname,
 
 Status VersionSet::Recover(
     const std::vector<ColumnFamilyDescriptor>& column_families, bool read_only,
-    std::string* db_id) {
+    std::string* db_id, bool no_error_if_files_missing) {
   // Read "CURRENT" file, which contains a pointer to the current manifest file
   std::string manifest_path;
   Status s = GetCurrentManifestPath(dbname_, fs_.get(), &manifest_path,
@@ -5551,10 +5557,9 @@ Status VersionSet::Recover(
     reporter.status = &log_read_status;
     log::Reader reader(nullptr, std::move(manifest_file_reader), &reporter,
                        true /* checksum */, 0 /* log_number */);
-    VersionEditHandler handler(read_only, column_families,
-                               const_cast<VersionSet*>(this),
-                               /*track_missing_files=*/false,
-                               /*no_error_if_files_missing=*/false, io_tracer_);
+    VersionEditHandler handler(
+        read_only, column_families, const_cast<VersionSet*>(this),
+        /*track_missing_files=*/false, no_error_if_files_missing, io_tracer_);
     handler.Iterate(reader, &log_read_status);
     s = handler.status();
     if (s.ok()) {
@@ -6719,13 +6724,46 @@ uint64_t VersionSet::GetTotalBlobFileSize(Version* dummy_versions) {
   return all_versions_blob_file_size;
 }
 
-Status VersionSet::VerifyFileMetadata(const std::string& fpath,
-                                      const FileMetaData& meta) const {
+Status VersionSet::VerifyFileMetadata(ColumnFamilyData* cfd,
+                                      const std::string& fpath, int level,
+                                      const FileMetaData& meta) {
   uint64_t fsize = 0;
   Status status = fs_->GetFileSize(fpath, IOOptions(), &fsize, nullptr);
   if (status.ok()) {
     if (fsize != meta.fd.GetFileSize()) {
       status = Status::Corruption("File size mismatch: " + fpath);
+    }
+  }
+  if (status.ok() && db_options_->verify_sst_unique_id_in_manifest) {
+    assert(cfd);
+    TableCache* table_cache = cfd->table_cache();
+    assert(table_cache);
+
+    const MutableCFOptions* const cf_opts = cfd->GetLatestMutableCFOptions();
+    assert(cf_opts);
+    std::shared_ptr<const SliceTransform> pe = cf_opts->prefix_extractor;
+    size_t max_sz_for_l0_meta_pin = MaxFileSizeForL0MetaPin(*cf_opts);
+
+    const FileOptions& file_opts = file_options();
+
+    Version* version = cfd->current();
+    assert(version);
+    VersionStorageInfo& storage_info = version->storage_info_;
+    const InternalKeyComparator* icmp = storage_info.InternalComparator();
+    assert(icmp);
+
+    InternalStats* internal_stats = cfd->internal_stats();
+
+    FileMetaData meta_copy = meta;
+    status = table_cache->FindTable(
+        ReadOptions(), file_opts, *icmp, meta_copy,
+        &(meta_copy.table_reader_handle), pe,
+        /*no_io=*/false, /*record_read_stats=*/true,
+        internal_stats->GetFileReadHist(level), false, level,
+        /*prefetch_index_and_filter_in_cache*/ false, max_sz_for_l0_meta_pin,
+        meta_copy.temperature);
+    if (meta_copy.table_reader_handle) {
+      table_cache->ReleaseHandle(meta_copy.table_reader_handle);
     }
   }
   return status;
