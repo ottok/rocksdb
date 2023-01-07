@@ -1,3 +1,9 @@
+rocksdb (7.8.3-2) unstable; urgency=medium
+
+  * Upload to Sid.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sat, 07 Jan 2023 13:33:41 +0100
+
 rocksdb (7.8.3-1) experimental; urgency=medium
 
   * New upstream release.
