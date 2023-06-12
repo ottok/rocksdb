@@ -26,7 +26,7 @@ Forwarded: no
 This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -203,17 +203,6 @@
+@@ -210,17 +210,6 @@
  
  include(CheckCCompilerFlag)
  if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(powerpc|ppc)64")

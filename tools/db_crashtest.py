@@ -88,6 +88,7 @@ default_params = {
     "index_type": lambda: random.choice([0, 0, 0, 2, 2, 3]),
     "ingest_external_file_one_in": 1000000,
     "iterpercent": 10,
+    "lock_wal_one_in": 1000000,
     "mark_for_compaction_one_file_in": lambda: 10 * random.randint(0, 1),
     "max_background_compactions": 20,
     "max_bytes_for_level_base": 10485760,
@@ -122,7 +123,6 @@ default_params = {
     "use_direct_io_for_flush_and_compaction": lambda: random.randint(0, 1),
     "mock_direct_io": False,
     "cache_type": lambda: random.choice(["lru_cache", "hyper_clock_cache"]),
-    # fast_lru_cache is incompatible with stress tests, because it doesn't support strict_capacity_limit == false.
     "use_full_merge_v1": lambda: random.randint(0, 1),
     "use_merge": lambda: random.randint(0, 1),
     # use_put_entity_one_in has to be the same across invocations for verification to work, hence no lambda
@@ -136,10 +136,12 @@ default_params = {
     "format_version": lambda: random.choice([2, 3, 4, 5, 5]),
     "index_block_restart_interval": lambda: random.choice(range(1, 16)),
     "use_multiget": lambda: random.randint(0, 1),
+    "use_get_entity": lambda: random.choice([0] * 7 + [1]),
     "periodic_compaction_seconds": lambda: random.choice([0, 0, 1, 2, 10, 100, 1000]),
     # 0 = never (used by some), 10 = often (for threading bugs), 600 = default
     "stats_dump_period_sec": lambda: random.choice([0, 10, 600]),
     "compaction_ttl": lambda: random.choice([0, 0, 1, 2, 10, 100, 1000]),
+    "fifo_allow_compaction": lambda: random.randint(0, 1),
     # Test small max_manifest_file_size in a smaller chance, as most of the
     # time we wnat manifest history to be preserved to help debug
     "max_manifest_file_size": lambda: random.choice(
@@ -209,6 +211,7 @@ _TEST_DIR_ENV_VAR = "TEST_TMPDIR"
 _DEBUG_LEVEL_ENV_VAR = "DEBUG_LEVEL"
 
 stress_cmd = "./db_stress"
+cleanup_cmd = None
 
 
 def is_release_mode():
@@ -223,6 +226,10 @@ def get_dbname(test_name):
     else:
         dbname = test_tmpdir + "/" + test_dir_name
         shutil.rmtree(dbname, True)
+        if cleanup_cmd is not None:
+            print("Running DB cleanup command - %s\n" % cleanup_cmd)
+            # Ignore failure
+            os.system(cleanup_cmd)
         os.mkdir(dbname)
     return dbname
 
@@ -396,8 +403,6 @@ ts_params = {
     "use_merge": 0,
     "use_full_merge_v1": 0,
     "use_txn": 0,
-    "enable_blob_files": 0,
-    "use_blob_db": 0,
     "ingest_external_file_one_in": 0,
     # PutEntity with timestamps is not yet implemented
     "use_put_entity_one_in" : 0,
@@ -598,9 +603,6 @@ def finalize_and_sanitize(src_params):
         dest_params["enable_compaction_filter"] = 0
         dest_params["sync"] = 0
         dest_params["write_fault_one_in"] = 0
-    if dest_params["secondary_cache_uri"] != "":
-        # Currently the only cache type compatible with a secondary cache is LRUCache
-        dest_params["cache_type"] = "lru_cache"
     # Remove the following once write-prepared/write-unprepared with/without
     # unordered write supports timestamped snapshots
     if dest_params.get("create_timestamped_snapshot_one_in", 0) > 0:
@@ -651,12 +653,11 @@ def gen_cmd_params(args):
     if args.test_tiered_storage:
         params.update(tiered_params)
 
-    # Best-effort recovery, user defined timestamp, tiered storage are currently
-    # incompatible with BlobDB. Test BE recovery if specified on the command
-    # line; otherwise, apply BlobDB related overrides with a 10% chance.
+    # Best-effort recovery, tiered storage are currently incompatible with BlobDB.
+    # Test BE recovery if specified on the command line; otherwise, apply BlobDB
+    # related overrides with a 10% chance.
     if (
         not args.test_best_efforts_recovery
-        and not args.enable_ts
         and not args.test_tiered_storage
         and random.choice([0] * 9 + [1]) == 1
     ):
@@ -690,6 +691,7 @@ def gen_cmd(params, unknown_params):
                 "write_policy",
                 "stress_cmd",
                 "test_tiered_storage",
+                "cleanup_cmd",
             }
             and v is not None
         ]
@@ -925,6 +927,12 @@ def whitebox_crash_main(args, unknown_args):
             # we need to clean up after ourselves -- only do this on test
             # success
             shutil.rmtree(dbname, True)
+            if cleanup_cmd is not None:
+                print("Running DB cleanup command - %s\n" % cleanup_cmd)
+                ret = os.system(cleanup_cmd)
+                if ret != 0:
+                    print("TEST FAILED. DB cleanup returned error %d\n" % ret)
+                    sys.exit(1)
             os.mkdir(dbname)
             if (expected_values_dir is not None):
                 shutil.rmtree(expected_values_dir, True)
@@ -937,6 +945,7 @@ def whitebox_crash_main(args, unknown_args):
 
 def main():
     global stress_cmd
+    global cleanup_cmd
 
     parser = argparse.ArgumentParser(
         description="This script runs and kills \
@@ -952,6 +961,7 @@ def main():
     parser.add_argument("--write_policy", choices=["write_committed", "write_prepared"])
     parser.add_argument("--stress_cmd")
     parser.add_argument("--test_tiered_storage", action="store_true")
+    parser.add_argument("--cleanup_cmd")
 
     all_params = dict(
         list(default_params.items())
@@ -986,6 +996,8 @@ def main():
 
     if args.stress_cmd:
         stress_cmd = args.stress_cmd
+    if args.cleanup_cmd:
+        cleanup_cmd = args.cleanup_cmd
     if args.test_type == "blackbox":
         blackbox_crash_main(args, unknown_args)
     if args.test_type == "whitebox":

@@ -1,3 +1,12 @@
+rocksdb (8.1.1-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Update patches.
+  * Library transition from librocksdb7.8 to librocksdb8.1 .
+  * Update Standards-Version to 4.6.2 .
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Mon, 12 Jun 2023 06:56:30 +0200
+
 rocksdb (7.8.3-2) unstable; urgency=medium
 
   * Upload to Sid.

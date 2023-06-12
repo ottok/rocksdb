@@ -13,7 +13,7 @@ index 225e3fa7211..cd5f935f1bb 100644
 +++ b/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h
 @@ -131,6 +131,10 @@ static inline tokutime_t toku_time_now(v
    uint64_t result;
-   __asm __volatile__("mrs %[rt], cntvct_el0" : [ rt ] "=r"(result));
+   __asm __volatile__("mrs %[rt], cntvct_el0" : [rt] "=r"(result));
    return result;
 +#elif defined(__arm__)
 +  uint32_t lo, hi;
