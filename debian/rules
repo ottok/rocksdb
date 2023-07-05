@@ -35,7 +35,7 @@ override_dh_auto_configure:
 		 -DWITH_CORE_TOOLS=ON \
 		 -DWITH_TOOLS=ON \
 		 -DWITH_TESTS=ON \
-		 -DPORTABLE=ON \
+		 -DPORTABLE=1 \
 		 -DFAIL_ON_WARNINGS=OFF
 
 override_dh_auto_test:
