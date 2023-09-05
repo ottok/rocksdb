@@ -25,6 +25,7 @@
 #include "rocksdb/wal_filter.h"
 #include "test_util/sync_point.h"
 #include "util/rate_limiter_impl.h"
+#include "util/udt_util.h"
 
 namespace ROCKSDB_NAMESPACE {
 Options SanitizeOptions(const std::string& dbname, const Options& src,
@@ -617,7 +618,7 @@ Status DBImpl::Recover(
                            f->file_creation_time, f->epoch_number,
                            f->file_checksum, f->file_checksum_func_name,
                            f->unique_id, f->compensated_range_deletion_size,
-                           f->tail_size);
+                           f->tail_size, f->user_defined_timestamps_persisted);
               ROCKS_LOG_WARN(immutable_db_options_.info_log,
                              "[%s] Moving #%" PRIu64
                              " from from_level-%d to from_level-%d %" PRIu64
@@ -1186,6 +1187,9 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
     std::string scratch;
     Slice record;
 
+    const UnorderedMap<uint32_t, size_t>& running_ts_sz =
+        versions_->GetRunningColumnFamiliesTimestampSize();
+
     TEST_SYNC_POINT_CALLBACK("DBImpl::RecoverLogFiles:BeforeReadWal",
                              /*arg=*/nullptr);
     uint64_t record_checksum;
@@ -1205,6 +1209,17 @@ Status DBImpl::RecoverLogFiles(const std::vector<uint64_t>& wal_numbers,
       WriteBatch batch;
 
       status = WriteBatchInternal::SetContents(&batch, record);
+      if (!status.ok()) {
+        return status;
+      }
+
+      const UnorderedMap<uint32_t, size_t>& record_ts_sz =
+          reader.GetRecordedTimestampSize();
+      // TODO(yuzhangyu): update mode to kReconcileInconsistency when user
+      // comparator can be changed.
+      status = HandleWriteBatchTimestampSizeDifference(
+          &batch, running_ts_sz, record_ts_sz,
+          TimestampSizeConsistencyMode::kVerifyConsistency);
       if (!status.ok()) {
         return status;
       }
@@ -1640,6 +1655,7 @@ Status DBImpl::WriteLevel0TableForRecovery(int job_id, ColumnFamilyData* cfd,
       Version* version = cfd->current();
       version->Ref();
       const ReadOptions read_option(Env::IOActivity::kDBOpen);
+      uint64_t num_input_entries = 0;
       s = BuildTable(
           dbname_, versions_.get(), immutable_db_options_, tboptions,
           file_options_for_compaction_, read_option, cfd->table_cache(),
@@ -1649,7 +1665,8 @@ Status DBImpl::WriteLevel0TableForRecovery(int job_id, ColumnFamilyData* cfd,
           io_tracer_, BlobFileCreationReason::kRecovery,
           empty_seqno_time_mapping, &event_logger_, job_id, Env::IO_HIGH,
           nullptr /* table_properties */, write_hint,
-          nullptr /*full_history_ts_low*/, &blob_callback_, version);
+          nullptr /*full_history_ts_low*/, &blob_callback_, version,
+          &num_input_entries);
       version->Unref();
       LogFlush(immutable_db_options_.info_log);
       ROCKS_LOG_DEBUG(immutable_db_options_.info_log,
@@ -1663,6 +1680,19 @@ Status DBImpl::WriteLevel0TableForRecovery(int job_id, ColumnFamilyData* cfd,
       if (!io_s.ok() && s.ok()) {
         s = io_s;
       }
+
+      uint64_t total_num_entries = mem->num_entries();
+      if (s.ok() && total_num_entries != num_input_entries) {
+        std::string msg = "Expected " + std::to_string(total_num_entries) +
+                          " entries in memtable, but read " +
+                          std::to_string(num_input_entries);
+        ROCKS_LOG_WARN(immutable_db_options_.info_log,
+                       "[%s] [JOB %d] Level-0 flush during recover: %s",
+                       cfd->GetName().c_str(), job_id, msg.c_str());
+        if (immutable_db_options_.flush_verify_memtable_count) {
+          s = Status::Corruption(msg);
+        }
+      }
     }
   }
   ReleaseFileNumberFromPendingOutputs(pending_outputs_inserted_elem);
@@ -1674,14 +1704,15 @@ Status DBImpl::WriteLevel0TableForRecovery(int job_id, ColumnFamilyData* cfd,
   constexpr int level = 0;
 
   if (s.ok() && has_output) {
-    edit->AddFile(
-        level, meta.fd.GetNumber(), meta.fd.GetPathId(), meta.fd.GetFileSize(),
-        meta.smallest, meta.largest, meta.fd.smallest_seqno,
-        meta.fd.largest_seqno, meta.marked_for_compaction, meta.temperature,
-        meta.oldest_blob_file_number, meta.oldest_ancester_time,
-        meta.file_creation_time, meta.epoch_number, meta.file_checksum,
-        meta.file_checksum_func_name, meta.unique_id,
-        meta.compensated_range_deletion_size, meta.tail_size);
+    edit->AddFile(level, meta.fd.GetNumber(), meta.fd.GetPathId(),
+                  meta.fd.GetFileSize(), meta.smallest, meta.largest,
+                  meta.fd.smallest_seqno, meta.fd.largest_seqno,
+                  meta.marked_for_compaction, meta.temperature,
+                  meta.oldest_blob_file_number, meta.oldest_ancester_time,
+                  meta.file_creation_time, meta.epoch_number,
+                  meta.file_checksum, meta.file_checksum_func_name,
+                  meta.unique_id, meta.compensated_range_deletion_size,
+                  meta.tail_size, meta.user_defined_timestamps_persisted);
 
     for (const auto& blob : blob_file_additions) {
       edit->AddBlobFile(blob);

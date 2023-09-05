@@ -721,6 +721,8 @@ int main(int argc, char** argv) {
 
   rocksdb_options_add_compact_on_deletion_collector_factory(options, 10000,
                                                             10001);
+  rocksdb_options_add_compact_on_deletion_collector_factory_del_ratio(
+      options, 10000, 10001, 0.0);
 
   StartPhase("destroy");
   rocksdb_destroy_db(options, dbname, &err);
@@ -1672,7 +1674,8 @@ int main(int argc, char** argv) {
     rocksdb_options_set_prefix_extractor(
         options, rocksdb_slicetransform_create_fixed_prefix(3));
     rocksdb_options_set_hash_skip_list_rep(options, 5000, 4, 4);
-    rocksdb_options_set_plain_table_factory(options, 4, 10, 0.75, 16);
+    rocksdb_options_set_plain_table_factory(options, 4, 10, 0.75, 16, 0, 0, 0,
+                                            0);
     rocksdb_options_set_allow_concurrent_memtable_write(options, 0);
 
     db = rocksdb_open(options, dbname, &err);
@@ -3119,6 +3122,17 @@ int main(int argc, char** argv) {
     CheckTxnDBGetCF(txn_db, roptions, cfh, "cf_foo", NULL);
     CheckTxnDBPinGetCF(txn_db, roptions, cfh, "cf_foo", NULL);
 
+
+    //memory usage
+    rocksdb_t* base_db = rocksdb_transactiondb_get_base_db(txn_db);
+    rocksdb_memory_consumers_t* consumers = rocksdb_memory_consumers_create();
+    rocksdb_memory_consumers_add_db(consumers, base_db);
+    rocksdb_memory_usage_t* usage = rocksdb_approximate_memory_usage_create(consumers, &err);
+    CheckNoError(err);
+    rocksdb_approximate_memory_usage_destroy(usage);
+    rocksdb_memory_consumers_destroy(consumers);
+    rocksdb_transactiondb_close_base_db(base_db);
+
     // flush
     rocksdb_flushoptions_t* flush_options = rocksdb_flushoptions_create();
     rocksdb_flushoptions_set_wait(flush_options, 1);
@@ -3374,8 +3388,19 @@ int main(int argc, char** argv) {
     rocksdb_put(db, woptions, "key", 3, "value", 5, &err);
     CheckNoError(err);
     rocksdb_column_family_handle_t *cfh1, *cfh2;
-    cfh1 = rocksdb_create_column_family(db, db_options, "txn_db_cf1", &err);
-    cfh2 = rocksdb_create_column_family(db, db_options, "txn_db_cf2", &err);
+    char** list_const_cf_names = (char**)malloc(2 * sizeof(char*));
+    list_const_cf_names[0] = "txn_db_cf1";
+    list_const_cf_names[1] = "txn_db_cf2";
+    size_t cflen;
+    rocksdb_column_family_handle_t** list_cfh = rocksdb_create_column_families(
+        db, db_options, 2, (const char* const*)list_const_cf_names, &cflen,
+        &err);
+    free(list_const_cf_names);
+    CheckNoError(err);
+    assert(cflen == 2);
+    cfh1 = list_cfh[0];
+    cfh2 = list_cfh[1];
+    rocksdb_create_column_families_destroy(list_cfh);
     txn = rocksdb_optimistictransaction_begin(otxn_db, woptions, otxn_options,
                                               NULL);
     rocksdb_transaction_put_cf(txn, cfh1, "key_cf1", 7, "val_cf1", 7, &err);
