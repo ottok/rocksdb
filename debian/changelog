@@ -1,3 +1,10 @@
+rocksdb (8.5.4-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Use no for Rules-Requires-Root.
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sun, 01 Oct 2023 09:06:53 +0200
+
 rocksdb (8.5.3-2) unstable; urgency=medium
 
   * Upload to Sid.

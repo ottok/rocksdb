@@ -5,6 +5,7 @@ Maintainer: Laszlo Boszormenyi (GCS) <gcs@debian.org>
 Build-Depends: debhelper-compat (= 13), cmake, libgflags-dev, libsnappy-dev,
  libbz2-dev, zlib1g-dev, liblz4-dev, libzstd-dev
 Standards-Version: 4.6.2
+Rules-Requires-Root: no
 Homepage: https://rocksdb.org/
 
 Package: librocksdb-dev
