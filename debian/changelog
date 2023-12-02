@@ -1,3 +1,10 @@
+rocksdb (8.8.1-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Library transition from librocksdb8.6 to librocksdb8.8 .
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Sat, 02 Dec 2023 21:37:21 +0100
+
 rocksdb (8.6.7-1) experimental; urgency=medium
 
   * New upstream release.
