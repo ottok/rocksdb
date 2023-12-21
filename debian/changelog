@@ -1,3 +1,10 @@
+rocksdb (8.9.1-2) unstable; urgency=medium
+
+  * Upload to Sid.
+  * Add loong64 architecture support (closes: #1059023).
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Thu, 21 Dec 2023 13:29:05 +0100
+
 rocksdb (8.9.1-1) experimental; urgency=medium
 
   * New major upstream release.
