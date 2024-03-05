@@ -288,39 +288,37 @@ void CompactionJob::Prepare() {
 
   if (preserve_time_duration > 0) {
     const ReadOptions read_options(Env::IOActivity::kCompaction);
-    // setup seqno_to_time_mapping_
-    seqno_to_time_mapping_.SetMaxTimeDuration(preserve_time_duration);
+    // Setup seqno_to_time_mapping_ with relevant time range.
+    seqno_to_time_mapping_.SetMaxTimeSpan(preserve_time_duration);
     for (const auto& each_level : *c->inputs()) {
       for (const auto& fmd : each_level.files) {
         std::shared_ptr<const TableProperties> tp;
         Status s =
             cfd->current()->GetTableProperties(read_options, &tp, fmd, nullptr);
         if (s.ok()) {
-          seqno_to_time_mapping_.Add(tp->seqno_to_time_mapping)
-              .PermitUncheckedError();
-          seqno_to_time_mapping_.Add(fmd->fd.smallest_seqno,
-                                     fmd->oldest_ancester_time);
+          s = seqno_to_time_mapping_.DecodeFrom(tp->seqno_to_time_mapping);
+        }
+        if (!s.ok()) {
+          ROCKS_LOG_WARN(
+              db_options_.info_log,
+              "Problem reading or processing seqno-to-time mapping: %s",
+              s.ToString().c_str());
         }
       }
     }
 
-    auto status = seqno_to_time_mapping_.Sort();
-    if (!status.ok()) {
-      ROCKS_LOG_WARN(db_options_.info_log,
-                     "Invalid sequence number to time mapping: Status: %s",
-                     status.ToString().c_str());
-    }
     int64_t _current_time = 0;
-    status = db_options_.clock->GetCurrentTime(&_current_time);
-    if (!status.ok()) {
+    Status s = db_options_.clock->GetCurrentTime(&_current_time);
+    if (!s.ok()) {
       ROCKS_LOG_WARN(db_options_.info_log,
                      "Failed to get current time in compaction: Status: %s",
-                     status.ToString().c_str());
+                     s.ToString().c_str());
       // preserve all time information
       preserve_time_min_seqno_ = 0;
       preclude_last_level_min_seqno_ = 0;
+      seqno_to_time_mapping_.Enforce();
     } else {
-      seqno_to_time_mapping_.TruncateOldEntries(_current_time);
+      seqno_to_time_mapping_.Enforce(_current_time);
       uint64_t preserve_time =
           static_cast<uint64_t>(_current_time) > preserve_time_duration
               ? _current_time - preserve_time_duration
@@ -344,6 +342,16 @@ void CompactionJob::Prepare() {
             1;
       }
     }
+    // For accuracy of the GetProximalSeqnoBeforeTime queries above, we only
+    // limit the capacity after them.
+    // Here If we set capacity to the per-SST limit, we could be throwing away
+    // fidelity when a compaction output file has a narrower seqno range than
+    // all the inputs. If we only limit capacity for each compaction output, we
+    // could be doing a lot of unnecessary recomputation in a large compaction
+    // (up to quadratic in number of files). Thus, we do soemthing in the
+    // middle: enforce a resonably large constant size limit substantially
+    // larger than kMaxSeqnoTimePairsPerSST.
+    seqno_to_time_mapping_.SetCapacity(kMaxSeqnoToTimeEntries);
   }
 }
 
@@ -476,7 +484,8 @@ void CompactionJob::GenSubcompactionBoundaries() {
   // overlap with N-1 other ranges. Since we requested a relatively large number
   // (128) of ranges from each input files, even N range overlapping would
   // cause relatively small inaccuracy.
-  const ReadOptions read_options(Env::IOActivity::kCompaction);
+  ReadOptions read_options(Env::IOActivity::kCompaction);
+  read_options.rate_limiter_priority = GetRateLimiterPriority();
   auto* c = compact_->compaction;
   if (c->max_subcompactions() <= 1 &&
       !(c->immutable_options()->compaction_pri == kRoundRobin &&
@@ -728,8 +737,9 @@ Status CompactionJob::Run() {
         // use_direct_io_for_flush_and_compaction is true, we will regard this
         // verification as user reads since the goal is to cache it here for
         // further user reads
-        const ReadOptions verify_table_read_options(
-            Env::IOActivity::kCompaction);
+        ReadOptions verify_table_read_options(Env::IOActivity::kCompaction);
+        verify_table_read_options.rate_limiter_priority =
+            GetRateLimiterPriority();
         InternalIterator* iter = cfd->table_cache()->NewIterator(
             verify_table_read_options, file_options_,
             cfd->internal_comparator(), files_output[file_idx]->meta,
@@ -1130,6 +1140,9 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
   // (b) CompactionFilter::Decision::kRemoveAndSkipUntil.
   read_options.total_order_seek = true;
 
+  const WriteOptions write_options(Env::IOPriority::IO_LOW,
+                                   Env::IOActivity::kCompaction);
+
   // Remove the timestamps from boundaries because boundaries created in
   // GenSubcompactionBoundaries doesn't strip away the timestamp.
   size_t ts_sz = cfd->user_comparator()->timestamp_size();
@@ -1264,8 +1277,8 @@ void CompactionJob::ProcessKeyValueCompaction(SubcompactionState* sub_compact) {
           ? new BlobFileBuilder(
                 versions_, fs_.get(),
                 sub_compact->compaction->immutable_options(),
-                mutable_cf_options, &file_options_, db_id_, db_session_id_,
-                job_id_, cfd->GetID(), cfd->GetName(), Env::IOPriority::IO_LOW,
+                mutable_cf_options, &file_options_, &write_options, db_id_,
+                db_session_id_, job_id_, cfd->GetID(), cfd->GetName(),
                 write_hint_, io_tracer_, blob_callback_,
                 BlobFileCreationReason::kCompaction, &blob_file_paths,
                 sub_compact->Current().GetBlobFileAdditionsPtr())
@@ -1710,6 +1723,8 @@ Status CompactionJob::InstallCompactionResults(
   db_mutex_->AssertHeld();
 
   const ReadOptions read_options(Env::IOActivity::kCompaction);
+  const WriteOptions write_options(Env::IOActivity::kCompaction);
+
   auto* compaction = compact_->compaction;
   assert(compaction);
 
@@ -1792,8 +1807,9 @@ Status CompactionJob::InstallCompactionResults(
   };
 
   return versions_->LogAndApply(
-      compaction->column_family_data(), mutable_cf_options, read_options, edit,
-      db_mutex_, db_directory_, /*new_descriptor_log=*/false,
+      compaction->column_family_data(), mutable_cf_options, read_options,
+      write_options, edit, db_mutex_, db_directory_,
+      /*new_descriptor_log=*/false,
       /*column_family_options=*/nullptr, manifest_wcb);
 }
 
@@ -1943,13 +1959,17 @@ Status CompactionJob::OpenCompactionOutputFile(SubcompactionState* sub_compact,
       sub_compact->compaction->immutable_options()->listeners;
   outputs.AssignFileWriter(new WritableFileWriter(
       std::move(writable_file), fname, fo_copy, db_options_.clock, io_tracer_,
-      db_options_.stats, listeners, db_options_.file_checksum_gen_factory.get(),
+      db_options_.stats, Histograms::SST_WRITE_MICROS, listeners,
+      db_options_.file_checksum_gen_factory.get(),
       tmp_set.Contains(FileType::kTableFile), false));
 
   // TODO(hx235): pass in the correct `oldest_key_time` instead of `0`
+  const ReadOptions read_options(Env::IOActivity::kCompaction);
+  const WriteOptions write_options(Env::IOActivity::kCompaction);
   TableBuilderOptions tboptions(
       *cfd->ioptions(), *(sub_compact->compaction->mutable_cf_options()),
-      cfd->internal_comparator(), cfd->int_tbl_prop_collector_factories(),
+      read_options, write_options, cfd->internal_comparator(),
+      cfd->int_tbl_prop_collector_factories(),
       sub_compact->compaction->output_compression(),
       sub_compact->compaction->output_compression_opts(), cfd->GetID(),
       cfd->GetName(), sub_compact->compaction->output_level(),
