@@ -2517,7 +2517,7 @@ TEST_F(DBTest, SnapshotFiles) {
     }
 
     // release file snapshot
-    ASSERT_OK(dbfull()->EnableFileDeletions(/*force*/ false));
+    ASSERT_OK(dbfull()->EnableFileDeletions());
     // overwrite one key, this key should not appear in the snapshot
     std::vector<std::string> extras;
     for (unsigned int i = 0; i < 1; i++) {
@@ -2747,7 +2747,7 @@ struct MTThread {
 };
 
 static void MTThreadBody(void* arg) {
-  MTThread* t = reinterpret_cast<MTThread*>(arg);
+  MTThread* t = static_cast<MTThread*>(arg);
   int id = t->id;
   DB* db = t->state->test->db_;
   int counter = 0;
@@ -2932,7 +2932,7 @@ struct GCThread {
 };
 
 static void GCThreadBody(void* arg) {
-  GCThread* t = reinterpret_cast<GCThread*>(arg);
+  GCThread* t = static_cast<GCThread*>(arg);
   int id = t->id;
   DB* db = t->db;
   WriteOptions wo;
@@ -3098,28 +3098,28 @@ class ModelDB : public DB {
   }
   using DB::Get;
   Status Get(const ReadOptions& /*options*/, ColumnFamilyHandle* /*cf*/,
-             const Slice& key, PinnableSlice* /*value*/) override {
+             const Slice& key, PinnableSlice* /*value*/,
+             std::string* /*timestamp*/) override {
     return Status::NotSupported(key);
   }
 
   using DB::GetMergeOperands;
-  virtual Status GetMergeOperands(
-      const ReadOptions& /*options*/, ColumnFamilyHandle* /*column_family*/,
-      const Slice& key, PinnableSlice* /*slice*/,
-      GetMergeOperandsOptions* /*merge_operands_options*/,
-      int* /*number_of_operands*/) override {
+  Status GetMergeOperands(const ReadOptions& /*options*/,
+                          ColumnFamilyHandle* /*column_family*/,
+                          const Slice& key, PinnableSlice* /*slice*/,
+                          GetMergeOperandsOptions* /*merge_operands_options*/,
+                          int* /*number_of_operands*/) override {
     return Status::NotSupported(key);
   }
 
   using DB::MultiGet;
-  std::vector<Status> MultiGet(
-      const ReadOptions& /*options*/,
-      const std::vector<ColumnFamilyHandle*>& /*column_family*/,
-      const std::vector<Slice>& keys,
-      std::vector<std::string>* /*values*/) override {
-    std::vector<Status> s(keys.size(),
-                          Status::NotSupported("Not implemented."));
-    return s;
+  void MultiGet(const ReadOptions& /*options*/, const size_t num_keys,
+                ColumnFamilyHandle** /*column_families*/, const Slice* /*keys*/,
+                PinnableSlice* /*values*/, std::string* /*timestamps*/,
+                Status* statuses, const bool /*sorted_input*/) override {
+    for (size_t i = 0; i < num_keys; ++i) {
+      statuses[i] = Status::NotSupported("Not implemented.");
+    }
   }
 
   using DB::IngestExternalFile;
@@ -3137,7 +3137,7 @@ class ModelDB : public DB {
   }
 
   using DB::CreateColumnFamilyWithImport;
-  virtual Status CreateColumnFamilyWithImport(
+  Status CreateColumnFamilyWithImport(
       const ColumnFamilyOptions& /*options*/,
       const std::string& /*column_family_name*/,
       const ImportColumnFamilyOptions& /*import_options*/,
@@ -3152,9 +3152,9 @@ class ModelDB : public DB {
   }
 
   using DB::ClipColumnFamily;
-  virtual Status ClipColumnFamily(ColumnFamilyHandle* /*column_family*/,
-                                  const Slice& /*begin*/,
-                                  const Slice& /*end*/) override {
+  Status ClipColumnFamily(ColumnFamilyHandle* /*column_family*/,
+                          const Slice& /*begin*/,
+                          const Slice& /*end*/) override {
     return Status::NotSupported("Not implemented.");
   }
 
@@ -3190,7 +3190,7 @@ class ModelDB : public DB {
       return new ModelIter(saved, true);
     } else {
       const KVMap* snapshot_state =
-          &(reinterpret_cast<const ModelSnapshot*>(options.snapshot)->map_);
+          &(static_cast<const ModelSnapshot*>(options.snapshot)->map_);
       return new ModelIter(snapshot_state, false);
     }
   }
@@ -3206,7 +3206,7 @@ class ModelDB : public DB {
   }
 
   void ReleaseSnapshot(const Snapshot* snapshot) override {
-    delete reinterpret_cast<const ModelSnapshot*>(snapshot);
+    delete static_cast<const ModelSnapshot*>(snapshot);
   }
 
   Status Write(const WriteOptions& /*options*/, WriteBatch* batch) override {
@@ -3308,7 +3308,7 @@ class ModelDB : public DB {
 
   void DisableManualCompaction() override {}
 
-  virtual Status WaitForCompact(
+  Status WaitForCompact(
       const WaitForCompactOptions& /* wait_for_compact_options */) override {
     return Status::OK();
   }
@@ -3354,7 +3354,7 @@ class ModelDB : public DB {
 
   Status DisableFileDeletions() override { return Status::OK(); }
 
-  Status EnableFileDeletions(bool /*force*/) override { return Status::OK(); }
+  Status EnableFileDeletions() override { return Status::OK(); }
 
   Status GetLiveFiles(std::vector<std::string>&, uint64_t* /*size*/,
                       bool /*flush_memtable*/ = true) override {
@@ -3381,8 +3381,7 @@ class ModelDB : public DB {
     return Status::OK();
   }
 
-  virtual Status GetCreationTimeOfOldestFile(
-      uint64_t* /*creation_time*/) override {
+  Status GetCreationTimeOfOldestFile(uint64_t* /*creation_time*/) override {
     return Status::NotSupported();
   }
 
@@ -4670,6 +4669,13 @@ void VerifyOperationCount(Env* env, ThreadStatus::OperationType op_type,
       op_count++;
     }
   }
+  if (op_count != expected_count) {
+    for (const auto& thread : thread_list) {
+      fprintf(stderr, "thread id: %" PRIu64 ", thread status: %s\n",
+              thread.thread_id,
+              thread.GetOperationName(thread.operation_type).c_str());
+    }
+  }
   ASSERT_EQ(op_count, expected_count);
 }
 }  // anonymous namespace
@@ -5241,7 +5247,7 @@ TEST_F(DBTest, DynamicLevelCompressionPerLevel2) {
   std::atomic<int> num_no(0);
   ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
       "LevelCompactionPicker::PickCompaction:Return", [&](void* arg) {
-        Compaction* compaction = reinterpret_cast<Compaction*>(arg);
+        Compaction* compaction = static_cast<Compaction*>(arg);
         if (compaction->output_level() == 4) {
           ASSERT_TRUE(compaction->output_compression() == kLZ4Compression);
           num_lz4.fetch_add(1);
@@ -5249,7 +5255,7 @@ TEST_F(DBTest, DynamicLevelCompressionPerLevel2) {
       });
   ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
       "FlushJob::WriteLevel0Table:output_compression", [&](void* arg) {
-        auto* compression = reinterpret_cast<CompressionType*>(arg);
+        auto* compression = static_cast<CompressionType*>(arg);
         ASSERT_TRUE(*compression == kNoCompression);
         num_no.fetch_add(1);
       });
@@ -5283,7 +5289,7 @@ TEST_F(DBTest, DynamicLevelCompressionPerLevel2) {
   num_no.store(0);
   ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
       "LevelCompactionPicker::PickCompaction:Return", [&](void* arg) {
-        Compaction* compaction = reinterpret_cast<Compaction*>(arg);
+        Compaction* compaction = static_cast<Compaction*>(arg);
         if (compaction->output_level() == 4 && compaction->start_level() == 3) {
           ASSERT_TRUE(compaction->output_compression() == kZlibCompression);
           num_zlib.fetch_add(1);
@@ -5294,7 +5300,7 @@ TEST_F(DBTest, DynamicLevelCompressionPerLevel2) {
       });
   ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
       "FlushJob::WriteLevel0Table:output_compression", [&](void* arg) {
-        auto* compression = reinterpret_cast<CompressionType*>(arg);
+        auto* compression = static_cast<CompressionType*>(arg);
         ASSERT_TRUE(*compression == kNoCompression);
         num_no.fetch_add(1);
       });
@@ -5807,13 +5813,6 @@ TEST_F(DBTest, DynamicMiscOptions) {
   ASSERT_OK(dbfull()->TEST_GetLatestMutableCFOptions(handles_[1],
                                                      &mutable_cf_options));
   ASSERT_TRUE(mutable_cf_options.report_bg_io_stats);
-  ASSERT_TRUE(mutable_cf_options.check_flush_compaction_key_order);
-
-  ASSERT_OK(dbfull()->SetOptions(
-      handles_[1], {{"check_flush_compaction_key_order", "false"}}));
-  ASSERT_OK(dbfull()->TEST_GetLatestMutableCFOptions(handles_[1],
-                                                     &mutable_cf_options));
-  ASSERT_FALSE(mutable_cf_options.check_flush_compaction_key_order);
 }
 
 TEST_F(DBTest, L0L1L2AndUpHitCounter) {
@@ -6193,7 +6192,7 @@ TEST_F(DBTest, SuggestCompactRangeTest) {
       return "CompactionFilterFactoryGetContext";
     }
     static bool IsManual(CompactionFilterFactory* compaction_filter_factory) {
-      return reinterpret_cast<CompactionFilterFactoryGetContext*>(
+      return static_cast<CompactionFilterFactoryGetContext*>(
                  compaction_filter_factory)
           ->saved_context.is_manual_compaction;
     }
@@ -7076,9 +7075,8 @@ TEST_F(DBTest, PinnableSliceAndRowCache) {
   ASSERT_OK(Flush());
 
   ASSERT_EQ(Get("foo"), "bar");
-  ASSERT_EQ(
-      reinterpret_cast<LRUCache*>(options.row_cache.get())->TEST_GetLRUSize(),
-      1);
+  ASSERT_EQ(static_cast<LRUCache*>(options.row_cache.get())->TEST_GetLRUSize(),
+            1);
 
   {
     PinnableSlice pin_slice;
@@ -7086,13 +7084,11 @@ TEST_F(DBTest, PinnableSliceAndRowCache) {
     ASSERT_EQ(pin_slice.ToString(), "bar");
     // Entry is already in cache, lookup will remove the element from lru
     ASSERT_EQ(
-        reinterpret_cast<LRUCache*>(options.row_cache.get())->TEST_GetLRUSize(),
-        0);
+        static_cast<LRUCache*>(options.row_cache.get())->TEST_GetLRUSize(), 0);
   }
   // After PinnableSlice destruction element is added back in LRU
-  ASSERT_EQ(
-      reinterpret_cast<LRUCache*>(options.row_cache.get())->TEST_GetLRUSize(),
-      1);
+  ASSERT_EQ(static_cast<LRUCache*>(options.row_cache.get())->TEST_GetLRUSize(),
+            1);
 }
 
 TEST_F(DBTest, ReusePinnableSlice) {
@@ -7105,9 +7101,8 @@ TEST_F(DBTest, ReusePinnableSlice) {
   ASSERT_OK(Flush());
 
   ASSERT_EQ(Get("foo"), "bar");
-  ASSERT_EQ(
-      reinterpret_cast<LRUCache*>(options.row_cache.get())->TEST_GetLRUSize(),
-      1);
+  ASSERT_EQ(static_cast<LRUCache*>(options.row_cache.get())->TEST_GetLRUSize(),
+            1);
 
   {
     PinnableSlice pin_slice;
@@ -7117,13 +7112,11 @@ TEST_F(DBTest, ReusePinnableSlice) {
 
     // Entry is already in cache, lookup will remove the element from lru
     ASSERT_EQ(
-        reinterpret_cast<LRUCache*>(options.row_cache.get())->TEST_GetLRUSize(),
-        0);
+        static_cast<LRUCache*>(options.row_cache.get())->TEST_GetLRUSize(), 0);
   }
   // After PinnableSlice destruction element is added back in LRU
-  ASSERT_EQ(
-      reinterpret_cast<LRUCache*>(options.row_cache.get())->TEST_GetLRUSize(),
-      1);
+  ASSERT_EQ(static_cast<LRUCache*>(options.row_cache.get())->TEST_GetLRUSize(),
+            1);
 
   {
     std::vector<Slice> multiget_keys;
@@ -7142,13 +7135,11 @@ TEST_F(DBTest, ReusePinnableSlice) {
 
     // Entry is already in cache, lookup will remove the element from lru
     ASSERT_EQ(
-        reinterpret_cast<LRUCache*>(options.row_cache.get())->TEST_GetLRUSize(),
-        0);
+        static_cast<LRUCache*>(options.row_cache.get())->TEST_GetLRUSize(), 0);
   }
   // After PinnableSlice destruction element is added back in LRU
-  ASSERT_EQ(
-      reinterpret_cast<LRUCache*>(options.row_cache.get())->TEST_GetLRUSize(),
-      1);
+  ASSERT_EQ(static_cast<LRUCache*>(options.row_cache.get())->TEST_GetLRUSize(),
+            1);
 
   {
     std::vector<ColumnFamilyHandle*> multiget_cfs;
@@ -7169,13 +7160,11 @@ TEST_F(DBTest, ReusePinnableSlice) {
 
     // Entry is already in cache, lookup will remove the element from lru
     ASSERT_EQ(
-        reinterpret_cast<LRUCache*>(options.row_cache.get())->TEST_GetLRUSize(),
-        0);
+        static_cast<LRUCache*>(options.row_cache.get())->TEST_GetLRUSize(), 0);
   }
   // After PinnableSlice destruction element is added back in LRU
-  ASSERT_EQ(
-      reinterpret_cast<LRUCache*>(options.row_cache.get())->TEST_GetLRUSize(),
-      1);
+  ASSERT_EQ(static_cast<LRUCache*>(options.row_cache.get())->TEST_GetLRUSize(),
+            1);
 }
 
 
@@ -7334,7 +7323,7 @@ TEST_F(DBTest, CreationTimeOfOldestFile) {
 
   ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->SetCallBack(
       "PropertyBlockBuilder::AddTableProperty:Start", [&](void* arg) {
-        TableProperties* props = reinterpret_cast<TableProperties*>(arg);
+        TableProperties* props = static_cast<TableProperties*>(arg);
         if (set_file_creation_time_to_zero) {
           if (idx == 0) {
             props->file_creation_time = 0;

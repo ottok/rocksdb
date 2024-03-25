@@ -8,3 +8,4 @@ mips.patch
 arm.patch
 0001-replace-old-sync-with-new-atomic-builtin-equivalents.patch
 rely-on-default-for-optimization-on-Power.patch
+fix_zstd_include.patch

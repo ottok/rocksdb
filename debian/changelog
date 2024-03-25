@@ -1,3 +1,10 @@
+rocksdb (9.0.0-1) experimental; urgency=medium
+
+  * New major upstream release.
+  * Library transition from librocksdb8.11 to librocksdb9.0 .
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Mon, 25 Mar 2024 18:21:02 +0100
+
 rocksdb (8.11.3-1) experimental; urgency=medium
 
   * New major upstream release.
