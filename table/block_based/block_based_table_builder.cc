@@ -480,8 +480,10 @@ struct BlockBasedTableBuilder::Rep {
         compression_ctxs(tbo.compression_opts.parallel_threads),
         verify_ctxs(tbo.compression_opts.parallel_threads),
         verify_dict(),
-        state((tbo.compression_opts.max_dict_bytes > 0) ? State::kBuffered
-                                                        : State::kUnbuffered),
+        state((tbo.compression_opts.max_dict_bytes > 0 &&
+               tbo.compression_type != kNoCompression)
+                  ? State::kBuffered
+                  : State::kUnbuffered),
         use_delta_encoding_for_index_values(table_opt.format_version >= 4 &&
                                             !table_opt.block_align),
         reason(tbo.reason),
@@ -707,7 +709,7 @@ struct BlockBasedTableBuilder::ParallelCompressionRep {
     template <typename T>
     void Fill(T&& rep) {
       slot_.push(std::forward<T>(rep));
-    };
+    }
     void Take(BlockRep*& rep) { slot_.pop(rep); }
 
    private:

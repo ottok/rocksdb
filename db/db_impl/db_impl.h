@@ -59,7 +59,6 @@
 #include "rocksdb/utilities/replayer.h"
 #include "rocksdb/write_buffer_manager.h"
 #include "table/merging_iterator.h"
-#include "table/scoped_arena_iterator.h"
 #include "util/autovector.h"
 #include "util/hash.h"
 #include "util/repeatable_thread.h"
@@ -351,6 +350,13 @@ class DBImpl : public DB {
 
   const Snapshot* GetSnapshot() override;
   void ReleaseSnapshot(const Snapshot* snapshot) override;
+
+  // UNDER CONSTRUCTION - DO NOT USE
+  // Return a cross-column-family iterator from a consistent database state.
+  std::unique_ptr<Iterator> NewMultiCfIterator(
+      const ReadOptions& options,
+      const std::vector<ColumnFamilyHandle*>& column_families) override;
+
   // Create a timestamped snapshot. This snapshot can be shared by multiple
   // readers. If any of them uses it for write conflict checking, then
   // is_write_conflict_boundary is true. For simplicity, set it to true by
@@ -646,8 +652,8 @@ class DBImpl : public DB {
 
   // If `snapshot` == kMaxSequenceNumber, set a recent one inside the file.
   ArenaWrappedDBIter* NewIteratorImpl(const ReadOptions& options,
-                                      ColumnFamilyData* cfd, SuperVersion* sv,
-                                      SequenceNumber snapshot,
+                                      ColumnFamilyHandleImpl* cfh,
+                                      SuperVersion* sv, SequenceNumber snapshot,
                                       ReadCallback* read_callback,
                                       bool expose_blob_index = false,
                                       bool allow_refresh = true);
@@ -1218,6 +1224,22 @@ class DBImpl : public DB {
   // sequence numbers from [1, last] to map to [now minus
   // populate_historical_seconds, now].
   void RecordSeqnoToTimeMapping(uint64_t populate_historical_seconds);
+
+  // Everytime DB's seqno to time mapping changed (which already hold the db
+  // mutex), we install a new SuperVersion in each column family with a shared
+  // copy of the new mapping while holding the db mutex.
+  // This is done for all column families even though the column family does not
+  // explicitly enabled the
+  // `preclude_last_level_data_seconds` or `preserve_internal_time_seconds`
+  // features.
+  // This mapping supports iterators to fulfill the
+  // "rocksdb.iterator.write-time" iterator property for entries in memtables.
+  //
+  // Since this new SuperVersion doesn't involve an LSM tree shape change, we
+  // don't schedule work after installing this SuperVersion. It returns the used
+  // `SuperVersionContext` for clean up after release mutex.
+  void InstallSeqnoToTimeMappingInSV(
+      std::vector<SuperVersionContext>* sv_contexts);
 
   // Interface to block and signal the DB in case of stalling writes by
   // WriteBufferManager. Each DBImpl object contains ptr to WBMStallInterface.

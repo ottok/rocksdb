@@ -44,6 +44,29 @@ project(rocksdb
   HOMEPAGE_URL https://rocksdb.org/
   LANGUAGES CXX C ASM)
 
+if(APPLE)
+  # On macOS Cmake, when cross-compiling, sometimes CMAKE_SYSTEM_PROCESSOR wrongfully stays
+  # the same as CMAKE_HOST_SYSTEM_PROCESSOR regardless the target CPU.
+  # The manual call to  set(CMAKE_SYSTEM_PROCESSOR) has to be set after the project() call.
+  # because project() might reset CMAKE_SYSTEM_PROCESSOR back to the value of CMAKE_HOST_SYSTEM_PROCESSOR.
+  # Check if CMAKE_SYSTEM_PROCESSOR is not equal to CMAKE_OSX_ARCHITECTURES
+  if(NOT CMAKE_OSX_ARCHITECTURES STREQUAL "")
+    if(NOT CMAKE_SYSTEM_PROCESSOR STREQUAL CMAKE_OSX_ARCHITECTURES)
+      # Split CMAKE_OSX_ARCHITECTURES into a list
+      string(REPLACE ";" " " ARCH_LIST ${CMAKE_OSX_ARCHITECTURES})
+      separate_arguments(ARCH_LIST UNIX_COMMAND ${ARCH_LIST})
+      # Count the number of architectures
+      list(LENGTH ARCH_LIST ARCH_COUNT)
+      # Ensure that exactly one architecture is specified
+      if(NOT ARCH_COUNT EQUAL 1)
+          message(FATAL_ERROR "CMAKE_OSX_ARCHITECTURES must have exactly one value. Current value: ${CMAKE_OSX_ARCHITECTURES}")
+      endif()
+      set(CMAKE_SYSTEM_PROCESSOR ${CMAKE_OSX_ARCHITECTURES})
+      message(STATUS "CMAKE_SYSTEM_PROCESSOR is manually set to ${CMAKE_SYSTEM_PROCESSOR}")
+    endif()
+  endif()
+endif()
+
 if(POLICY CMP0042)
   cmake_policy(SET CMP0042 NEW)
 endif()
@@ -182,7 +205,7 @@ endif()
 
 if(MSVC)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Zi /nologo /EHsc /GS /Gd /GR /GF /fp:precise /Zc:wchar_t /Zc:forScope /errorReport:queue")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /FC /d2Zi+ /W4 /wd4127 /wd4800 /wd4996 /wd4351 /wd4100 /wd4204 /wd4324")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /FC /d2Zi+ /W4 /wd4127 /wd4996 /wd4100 /wd4324")
 else()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -W -Wextra -Wall -pthread")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wsign-compare -Wshadow -Wno-unused-parameter -Wno-unused-variable -Woverloaded-virtual -Wnon-virtual-dtor -Wno-missing-field-initializers -Wno-strict-aliasing -Wno-invalid-offsetof")
@@ -191,6 +214,7 @@ else()
   endif()
   if(MINGW)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-format")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wa,-mbig-obj")
     add_definitions(-D_POSIX_C_SOURCE=1)
   endif()
   if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -691,6 +715,7 @@ set(SOURCES
         db/memtable_list.cc
         db/merge_helper.cc
         db/merge_operator.cc
+        db/multi_cf_iterator.cc
         db/output_validator.cc
         db/periodic_task_scheduler.cc
         db/range_del_aggregator.cc
@@ -1343,6 +1368,7 @@ if(WITH_TESTS)
         db/memtable_list_test.cc
         db/merge_helper_test.cc
         db/merge_test.cc
+        db/multi_cf_iterator_test.cc
         db/options_file_test.cc
         db/perf_context_test.cc
         db/periodic_task_scheduler_test.cc

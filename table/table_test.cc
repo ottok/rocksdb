@@ -63,7 +63,6 @@
 #include "table/internal_iterator.h"
 #include "table/meta_blocks.h"
 #include "table/plain/plain_table_factory.h"
-#include "table/scoped_arena_iterator.h"
 #include "table/sst_file_writer_collectors.h"
 #include "table/unique_id_impl.h"
 #include "test_util/sync_point.h"
@@ -534,7 +533,9 @@ class MemTableConstructor : public Constructor {
   InternalIterator* NewIterator(
       const SliceTransform* /*prefix_extractor*/) const override {
     return new KeyConvertingIterator(
-        memtable_->NewIterator(ReadOptions(), &arena_), true);
+        memtable_->NewIterator(ReadOptions(), /*seqno_to_time_mapping=*/nullptr,
+                               &arena_),
+        true);
   }
 
   bool AnywayDeleteIterator() const override { return true; }
@@ -4893,12 +4894,13 @@ TEST_F(MemTableTest, Simple) {
 
   for (int i = 0; i < 2; ++i) {
     Arena arena;
-    ScopedArenaIterator arena_iter_guard;
+    ScopedArenaPtr<InternalIterator> arena_iter_guard;
     std::unique_ptr<InternalIterator> iter_guard;
     InternalIterator* iter;
     if (i == 0) {
-      iter = GetMemTable()->NewIterator(ReadOptions(), &arena);
-      arena_iter_guard.set(iter);
+      iter = GetMemTable()->NewIterator(
+          ReadOptions(), /*seqno_to_time_mapping=*/nullptr, &arena);
+      arena_iter_guard.reset(iter);
     } else {
       iter = GetMemTable()->NewRangeTombstoneIterator(
           ReadOptions(), kMaxSequenceNumber /* read_seq */,

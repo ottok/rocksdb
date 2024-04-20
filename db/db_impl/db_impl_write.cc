@@ -220,6 +220,11 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
              write_options.protection_bytes_per_key != 8) {
     return Status::InvalidArgument(
         "`WriteOptions::protection_bytes_per_key` must be zero or eight");
+  } else if (write_options.disableWAL &&
+             immutable_db_options_.recycle_log_file_num > 0) {
+    return Status::InvalidArgument(
+        "WriteOptions::disableWAL option is not supported if "
+        "DBOptions::recycle_log_file_num > 0");
   }
   // TODO: this use of operator bool on `tracer_` can avoid unnecessary lock
   // grabs but does not seem thread-safe.
@@ -325,7 +330,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
 
     if (w.ShouldWriteToMemtable()) {
       PERF_TIMER_STOP(write_pre_and_post_process_time);
-      PERF_TIMER_GUARD(write_memtable_time);
+      PERF_TIMER_FOR_WAIT_GUARD(write_memtable_time);
 
       ColumnFamilyMemTablesImpl column_family_memtables(
           versions_->GetColumnFamilySet());
@@ -557,7 +562,7 @@ Status DBImpl::WriteImpl(const WriteOptions& write_options,
     }
 
     if (status.ok()) {
-      PERF_TIMER_GUARD(write_memtable_time);
+      PERF_TIMER_FOR_WAIT_GUARD(write_memtable_time);
 
       if (!parallel) {
         // w.sequence will be set inside InsertInto
@@ -797,7 +802,7 @@ Status DBImpl::PipelinedWriteImpl(const WriteOptions& write_options,
   WriteThread::WriteGroup memtable_write_group;
 
   if (w.state == WriteThread::STATE_MEMTABLE_WRITER_LEADER) {
-    PERF_TIMER_GUARD(write_memtable_time);
+    PERF_TIMER_FOR_WAIT_GUARD(write_memtable_time);
     assert(w.ShouldWriteToMemtable());
     write_thread_.EnterAsMemTableWriter(&w, &memtable_write_group);
     if (memtable_write_group.size > 1 &&
@@ -820,7 +825,7 @@ Status DBImpl::PipelinedWriteImpl(const WriteOptions& write_options,
 
   if (w.state == WriteThread::STATE_PARALLEL_MEMTABLE_WRITER) {
     PERF_TIMER_STOP(write_pre_and_post_process_time);
-    PERF_TIMER_GUARD(write_memtable_time);
+    PERF_TIMER_FOR_WAIT_GUARD(write_memtable_time);
 
     assert(w.ShouldWriteToMemtable());
     ColumnFamilyMemTablesImpl column_family_memtables(
@@ -868,7 +873,7 @@ Status DBImpl::UnorderedWriteMemtable(const WriteOptions& write_options,
     RecordTick(stats_, NUMBER_KEYS_WRITTEN, total_count);
 
     PERF_TIMER_STOP(write_pre_and_post_process_time);
-    PERF_TIMER_GUARD(write_memtable_time);
+    PERF_TIMER_FOR_WAIT_GUARD(write_memtable_time);
 
     ColumnFamilyMemTablesImpl column_family_memtables(
         versions_->GetColumnFamilySet());
@@ -954,7 +959,7 @@ Status DBImpl::WriteImplWALOnly(
     }
   } else {
     PERF_TIMER_STOP(write_pre_and_post_process_time);
-    PERF_TIMER_GUARD(write_delay_time);
+    PERF_TIMER_FOR_WAIT_GUARD(write_delay_time);
     InstrumentedMutexLock lock(&mutex_);
     Status status =
         DelayWrite(/*num_bytes=*/0ull, *write_thread, write_options);
@@ -1228,7 +1233,7 @@ Status DBImpl::PreprocessWrite(const WriteOptions& write_options,
   if (UNLIKELY(status.ok() && (write_controller_.IsStopped() ||
                                write_controller_.NeedsDelay()))) {
     PERF_TIMER_STOP(write_pre_and_post_process_time);
-    PERF_TIMER_GUARD(write_delay_time);
+    PERF_TIMER_FOR_WAIT_GUARD(write_delay_time);
     // We don't know size of curent batch so that we always use the size
     // for previous one. It might create a fairness issue that expiration
     // might happen for smaller writes but larger writes can go through.
@@ -2000,7 +2005,7 @@ Status DBImpl::ThrottleLowPriWritesIfNeeded(const WriteOptions& write_options,
       // is that in case the write is heavy, low pri writes may never have
       // a chance to run. Now we guarantee we are still slowly making
       // progress.
-      PERF_TIMER_GUARD(write_delay_time);
+      PERF_TIMER_FOR_WAIT_GUARD(write_delay_time);
       auto data_size = my_batch->GetDataSize();
       while (data_size > 0) {
         size_t allowed = write_controller_.low_pri_rate_limiter()->RequestToken(
@@ -2135,7 +2140,7 @@ void DBImpl::NotifyOnMemTableSealed(ColumnFamilyData* /*cfd*/,
   }
 
   mutex_.Unlock();
-  for (auto listener : immutable_db_options_.listeners) {
+  for (const auto& listener : immutable_db_options_.listeners) {
     listener->OnMemTableSealed(mem_table_info);
   }
   mutex_.Lock();
@@ -2173,8 +2178,10 @@ Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
     log_write_mutex_.Unlock();
   }
   uint64_t recycle_log_number = 0;
+  // If file deletion is disabled, don't recycle logs since it'll result in
+  // the file getting renamed
   if (creating_new_log && immutable_db_options_.recycle_log_file_num &&
-      !log_recycle_files_.empty()) {
+      !log_recycle_files_.empty() && IsFileDeletionsEnabled()) {
     recycle_log_number = log_recycle_files_.front();
   }
   uint64_t new_log_number =
@@ -2252,7 +2259,7 @@ Status DBImpl::SwitchMemtable(ColumnFamilyData* cfd, WriteContext* context) {
       log_empty_ = true;
       log_dir_synced_ = false;
       logs_.emplace_back(logfile_number_, new_log);
-      alive_log_files_.push_back(LogFileNumberSize(logfile_number_));
+      alive_log_files_.emplace_back(logfile_number_);
     }
   }
 
