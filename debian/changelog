@@ -1,3 +1,10 @@
+rocksdb (9.1.1-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Update Standards-Version to 4.7.0 .
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Wed, 24 Apr 2024 18:03:57 +0200
+
 rocksdb (9.1.0-1) experimental; urgency=medium
 
   * New major upstream release.
