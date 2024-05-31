@@ -255,7 +255,8 @@ Status TransactionDB::Open(
       txn_db_options.write_policy == WRITE_COMMITTED ||
       txn_db_options.write_policy == WRITE_PREPARED;
   s = DBImpl::Open(db_options_2pc, dbname, column_families_copy, handles, &db,
-                   use_seq_per_batch, use_batch_per_txn);
+                   use_seq_per_batch, use_batch_per_txn,
+                   /*is_retry=*/false, /*can_retry=*/nullptr);
   if (s.ok()) {
     ROCKS_LOG_WARN(db->GetDBOptions().info_log,
                    "Transaction write_policy is %" PRId32,
@@ -421,6 +422,27 @@ Status PessimisticTransactionDB::CreateColumnFamilies(
       lock_manager_->AddColumnFamily(handle);
       UpdateCFComparatorMap(handle);
     }
+  }
+
+  return s;
+}
+
+Status PessimisticTransactionDB::CreateColumnFamilyWithImport(
+    const ColumnFamilyOptions& options, const std::string& column_family_name,
+    const ImportColumnFamilyOptions& import_options,
+    const std::vector<const ExportImportFilesMetaData*>& metadatas,
+    ColumnFamilyHandle** handle) {
+  InstrumentedMutexLock l(&column_family_mutex_);
+  Status s = VerifyCFOptions(options);
+  if (!s.ok()) {
+    return s;
+  }
+
+  s = db_->CreateColumnFamilyWithImport(options, column_family_name,
+                                        import_options, metadatas, handle);
+  if (s.ok()) {
+    lock_manager_->AddColumnFamily(*handle);
+    UpdateCFComparatorMap(*handle);
   }
 
   return s;

@@ -1420,6 +1420,14 @@ Status DBImpl::CompactFiles(const CompactionOptions& compact_options,
   LogBuffer log_buffer(InfoLogLevel::INFO_LEVEL,
                        immutable_db_options_.info_log.get());
 
+  if (compact_options.compression !=
+      CompressionType::kDisableCompressionOption) {
+    ROCKS_LOG_WARN(immutable_db_options_.info_log,
+                   "[%s] [JOB %d] Found use of deprecated option "
+                   "`CompactionOptions::compression`",
+                   cfd->GetName().c_str(), job_context.job_id);
+  }
+
   // Perform CompactFiles
   TEST_SYNC_POINT("TestCompactFiles::IngestExternalFile2");
   TEST_SYNC_POINT_CALLBACK("TestCompactFiles:PausingManualCompaction:3",
@@ -1774,6 +1782,8 @@ void DBImpl::NotifyOnCompactionCompleted(
 
 // REQUIREMENT: block all background work by calling PauseBackgroundWork()
 // before calling this function
+// TODO (hx235): Replace Status::NotSupported() with Status::Aborted() for
+// better semantics like CompactFiles()
 Status DBImpl::ReFitLevel(ColumnFamilyData* cfd, int level, int target_level) {
   assert(level < cfd->NumberLevels());
   if (target_level >= cfd->NumberLevels()) {
@@ -1809,6 +1819,8 @@ Status DBImpl::ReFitLevel(ColumnFamilyData* cfd, int level, int target_level) {
   if (to_level != level) {
     std::vector<CompactionInputFiles> input(1);
     input[0].level = level;
+    // TODO (hx235): Only refit the output files in the current manual
+    // compaction instead of all the files in the output level
     for (auto& f : vstorage->LevelFiles(level)) {
       input[0].files.push_back(f);
     }
@@ -1840,6 +1852,12 @@ Status DBImpl::ReFitLevel(ColumnFamilyData* cfd, int level, int target_level) {
       }
     } else {
       // to_level < level
+      if (to_level == 0 && input[0].files.size() > 1) {
+        refitting_level_ = false;
+        return Status::Aborted(
+            "Moving more than 1 file from non-L0 to L0 is not allowed as it "
+            "does not bring any benefit to read nor write throughput.");
+      }
       // Check levels are empty for a trivial move
       for (int l = to_level; l < level; l++) {
         if (vstorage->NumLevelFiles(l) > 0) {
@@ -2154,16 +2172,6 @@ Status DBImpl::RunManualCompaction(
                manual.begin, manual.end, &manual.manual_end, &manual_conflict,
                max_file_num_to_ignore, trim_ts)) == nullptr &&
           manual_conflict))) {
-      if (!scheduled) {
-        // There is a conflicting compaction
-        if (manual_compaction_paused_ > 0 || manual.canceled == true) {
-          // Stop waiting since it was canceled. Pretend the error came from
-          // compaction so the below cleanup/error handling code can process it.
-          manual.done = true;
-          manual.status =
-              Status::Incomplete(Status::SubCode::kManualCompactionPaused);
-        }
-      }
       if (!manual.done) {
         bg_cv_.Wait();
       }
@@ -2236,6 +2244,17 @@ Status DBImpl::RunManualCompaction(
       TEST_SYNC_POINT("DBImpl::RunManualCompaction:Scheduled");
       if (final_output_level) {
         *final_output_level = compaction->output_level();
+      }
+    }
+    if (!scheduled) {
+      // There is nothing scheduled to wait on, so any cancellation can end the
+      // manual now.
+      if (manual_compaction_paused_ > 0 || manual.canceled == true) {
+        // Stop waiting since it was canceled. Pretend the error came from
+        // compaction so the below cleanup/error handling code can process it.
+        manual.done = true;
+        manual.status =
+            Status::Incomplete(Status::SubCode::kManualCompactionPaused);
       }
     }
   }
@@ -3032,6 +3051,8 @@ void DBImpl::SchedulePendingCompaction(ColumnFamilyData* cfd) {
     return;
   }
   if (!cfd->queued_for_compaction() && cfd->NeedsCompaction()) {
+    TEST_SYNC_POINT_CALLBACK("SchedulePendingCompaction::cfd",
+                             static_cast<void*>(cfd));
     AddToCompactionQueue(cfd);
     ++unscheduled_compactions_;
   }
@@ -4344,6 +4365,7 @@ Status DBImpl::WaitForCompact(
     }
     if ((bg_bottom_compaction_scheduled_ || bg_compaction_scheduled_ ||
          bg_flush_scheduled_ || unscheduled_compactions_ ||
+         (wait_for_compact_options.wait_for_purge && bg_purge_scheduled_) ||
          unscheduled_flushes_ || error_handler_.IsRecoveryInProgress()) &&
         (error_handler_.GetBGError().ok())) {
       if (wait_for_compact_options.timeout.count()) {
@@ -4351,6 +4373,7 @@ Status DBImpl::WaitForCompact(
           return Status::TimedOut();
         }
       } else {
+        TEST_SYNC_POINT("DBImpl::WaitForCompact:InsideLoop");
         bg_cv_.Wait();
       }
     } else if (wait_for_compact_options.close_db) {
