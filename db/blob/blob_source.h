@@ -99,6 +99,8 @@ class BlobSource {
                                                blob_file_reader);
   }
 
+  inline Cache* GetBlobCache() const { return blob_cache_.get(); }
+
   bool TEST_BlobInCache(uint64_t file_number, uint64_t file_size,
                         uint64_t offset) const;
 
@@ -116,12 +118,19 @@ class BlobSource {
                               size_t charge, Cache::Handle** cache_handle,
                               Cache::Priority priority) const;
 
-  inline CacheKey GetCacheKey(uint64_t file_number, uint64_t file_size,
+  inline CacheKey GetCacheKey(uint64_t file_number, uint64_t /*file_size*/,
                               uint64_t offset) const {
-    OffsetableCacheKey base_cache_key(db_id_, db_session_id_, file_number,
-                                      file_size);
+    OffsetableCacheKey base_cache_key(db_id_, db_session_id_, file_number);
     return base_cache_key.WithOffset(offset);
   }
+
+  // Callbacks for secondary blob cache
+  static size_t SizeCallback(void* obj);
+
+  static Status SaveToCallback(void* from_obj, size_t from_offset,
+                               size_t length, void* out);
+
+  static Cache::CacheItemHelper* GetCacheItemHelper();
 
   const std::string& db_id_;
   const std::string& db_session_id_;
@@ -133,6 +142,12 @@ class BlobSource {
 
   // A cache to store uncompressed blobs.
   std::shared_ptr<Cache> blob_cache_;
+
+  // The control option of how the cache tiers will be used. Currently rocksdb
+  // support block/blob cache (volatile tier) and secondary cache (this tier
+  // isn't strictly speaking a non-volatile tier since the compressed cache in
+  // this tier is in volatile memory).
+  const CacheTier lowest_used_cache_tier_;
 };
 
 }  // namespace ROCKSDB_NAMESPACE
