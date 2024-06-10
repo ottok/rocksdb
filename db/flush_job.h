@@ -19,7 +19,6 @@
 
 #include "db/blob/blob_file_completion_callback.h"
 #include "db/column_family.h"
-#include "db/dbformat.h"
 #include "db/flush_scheduler.h"
 #include "db/internal_stats.h"
 #include "db/job_context.h"
@@ -93,9 +92,6 @@ class FlushJob {
     return &committed_flush_jobs_info_;
   }
 #endif  // !ROCKSDB_LITE
-
-  // Return the IO status
-  IOStatus io_status() const { return io_status_; }
 
  private:
   void ReportStartedFlush();
@@ -185,7 +181,6 @@ class FlushJob {
   Version* base_;
   bool pick_memtable_called;
   Env::Priority thread_pri_;
-  IOStatus io_status_;
 
   const std::shared_ptr<IOTracer> io_tracer_;
   SystemClock* clock_;

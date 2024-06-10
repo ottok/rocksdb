@@ -11,6 +11,7 @@
 
 #include "db/column_family.h"
 #include "db/db_impl/db_impl.h"
+#include "logging/logging.h"
 #include "rocksdb/comparator.h"
 #include "rocksdb/db.h"
 #include "rocksdb/status.h"
@@ -124,7 +125,9 @@ Status TransactionBaseImpl::TryLock(ColumnFamilyHandle* column_family,
 
 void TransactionBaseImpl::SetSavePoint() {
   if (save_points_ == nullptr) {
-    save_points_.reset(new std::stack<TransactionBaseImpl::SavePoint, autovector<TransactionBaseImpl::SavePoint>>());
+    save_points_.reset(
+        new std::stack<TransactionBaseImpl::SavePoint,
+                       autovector<TransactionBaseImpl::SavePoint>>());
   }
   save_points_->emplace(snapshot_, snapshot_needed_, snapshot_notifier_,
                         num_puts_, num_deletes_, num_merges_,
@@ -659,6 +662,10 @@ Status TransactionBaseImpl::RebuildFromWriteBatch(WriteBatch* src_batch) {
     }
 
     Status MarkCommit(const Slice&) override {
+      return Status::InvalidArgument();
+    }
+
+    Status MarkCommitWithTimestamp(const Slice&, const Slice&) override {
       return Status::InvalidArgument();
     }
 

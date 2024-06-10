@@ -15,7 +15,6 @@
 
 #include "db/blob/blob_file_builder.h"
 #include "db/compaction/compaction_iterator.h"
-#include "db/dbformat.h"
 #include "db/event_helpers.h"
 #include "db/internal_stats.h"
 #include "db/merge_helper.h"
@@ -63,9 +62,9 @@ Status BuildTable(
     FileMetaData* meta, std::vector<BlobFileAddition>* blob_file_additions,
     std::vector<SequenceNumber> snapshots,
     SequenceNumber earliest_write_conflict_snapshot,
-    SnapshotChecker* snapshot_checker, bool paranoid_file_checks,
-    InternalStats* internal_stats, IOStatus* io_status,
-    const std::shared_ptr<IOTracer>& io_tracer,
+    SequenceNumber job_snapshot, SnapshotChecker* snapshot_checker,
+    bool paranoid_file_checks, InternalStats* internal_stats,
+    IOStatus* io_status, const std::shared_ptr<IOTracer>& io_tracer,
     BlobFileCreationReason blob_creation_reason, EventLogger* event_logger,
     int job_id, const Env::IOPriority io_priority,
     TableProperties* table_properties, Env::WriteLifeTimeHint write_hint,
@@ -190,12 +189,13 @@ Status BuildTable(
     CompactionIterator c_iter(
         iter, tboptions.internal_comparator.user_comparator(), &merge,
         kMaxSequenceNumber, &snapshots, earliest_write_conflict_snapshot,
-        snapshot_checker, env, ShouldReportDetailedTime(env, ioptions.stats),
+        job_snapshot, snapshot_checker, env,
+        ShouldReportDetailedTime(env, ioptions.stats),
         true /* internal key corruption is not ok */, range_del_agg.get(),
         blob_file_builder.get(), ioptions.allow_data_in_errors,
         /*compaction=*/nullptr, compaction_filter.get(),
         /*shutting_down=*/nullptr,
-        /*preserve_deletes_seqnum=*/0, /*manual_compaction_paused=*/nullptr,
+        /*manual_compaction_paused=*/nullptr,
         /*manual_compaction_canceled=*/nullptr, db_options.info_log,
         full_history_ts_low);
 
@@ -212,7 +212,11 @@ Status BuildTable(
         break;
       }
       builder->Add(key, value);
-      meta->UpdateBoundaries(key, value, ikey.sequence, ikey.type);
+
+      s = meta->UpdateBoundaries(key, value, ikey.sequence, ikey.type);
+      if (!s.ok()) {
+        break;
+      }
 
       // TODO(noetzli): Update stats after flush, too.
       if (io_priority == Env::IO_HIGH &&
@@ -319,6 +323,7 @@ Status BuildTable(
 
     // TODO Also check the IO status when create the Iterator.
 
+    TEST_SYNC_POINT("BuildTable:BeforeOutputValidation");
     if (s.ok() && !empty) {
       // Verify that the table is usable
       // We set for_compaction to false and don't OptimizeForCompactionTableRead
@@ -329,8 +334,8 @@ Status BuildTable(
       ReadOptions read_options;
       std::unique_ptr<InternalIterator> it(table_cache->NewIterator(
           read_options, file_options, tboptions.internal_comparator, *meta,
-          nullptr /* range_del_agg */,
-          mutable_cf_options.prefix_extractor.get(), nullptr,
+          nullptr /* range_del_agg */, mutable_cf_options.prefix_extractor,
+          nullptr,
           (internal_stats == nullptr) ? nullptr
                                       : internal_stats->GetFileReadHist(0),
           TableReaderCaller::kFlush, /*arena=*/nullptr,
@@ -381,14 +386,19 @@ Status BuildTable(
     }
   }
 
+  Status status_for_listener = s;
   if (meta->fd.GetFileSize() == 0) {
     fname = "(nil)";
+    if (s.ok()) {
+      status_for_listener = Status::Aborted("Empty SST file not kept");
+    }
   }
   // Output to event logger and fire events.
   EventHelpers::LogAndNotifyTableFileCreationFinished(
       event_logger, ioptions.listeners, dbname, tboptions.column_family_name,
       fname, job_id, meta->fd, meta->oldest_blob_file_number, tp,
-      tboptions.reason, s, file_checksum, file_checksum_func_name);
+      tboptions.reason, status_for_listener, file_checksum,
+      file_checksum_func_name);
 
   return s;
 }

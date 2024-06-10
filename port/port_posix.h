@@ -25,6 +25,11 @@
 
 #define ROCKSDB_NOEXCEPT noexcept
 
+// thread_local is part of C++11 and later (TODO: clean up this define)
+#ifndef __thread
+#define __thread thread_local
+#endif
+
 #undef PLATFORM_IS_LITTLE_ENDIAN
 #if defined(OS_MACOSX)
   #include <machine/endian.h>
@@ -116,6 +121,9 @@ class Mutex {
 
   void Lock();
   void Unlock();
+
+  bool TryLock();
+
   // this will assert if the mutex is not locked
   // it does NOT verify that mutex is held by a calling thread
   void AssertHeld();
@@ -190,7 +198,11 @@ extern void InitOnce(OnceType* once, void (*initializer)());
 #define ALIGN_AS(n) /*empty*/
 #else
 #if defined(__s390__)
+#if defined(__GNUC__) && __GNUC__ < 7
+#define CACHE_LINE_SIZE 64U
+#else
 #define CACHE_LINE_SIZE 256U
+#endif
 #elif defined(__powerpc__) || defined(__aarch64__)
 #define CACHE_LINE_SIZE 128U
 #else

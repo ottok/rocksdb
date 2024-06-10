@@ -18,6 +18,7 @@
 #include "cache/cache_entry_roles.h"
 #include "db/version_set.h"
 #include "rocksdb/system_clock.h"
+#include "util/hash_containers.h"
 
 class ColumnFamilyData;
 
@@ -96,6 +97,11 @@ struct LevelStat {
   std::string header_name;
 };
 
+struct DBStatInfo {
+  // This what will be property_name in the flat map returned to the user
+  std::string property_name;
+};
+
 class InternalStats {
  public:
   static const std::map<LevelStatType, LevelStat> compaction_level_stats;
@@ -129,6 +135,8 @@ class InternalStats {
     kIntStatsWriteStallMicros,
     kIntStatsNumMax,
   };
+
+  static const std::map<InternalDBStatsType, DBStatInfo> db_stats_type_to_info;
 
   InternalStats(int num_levels, SystemClock* clock, ColumnFamilyData* cfd);
 
@@ -380,7 +388,7 @@ class InternalStats {
                SystemClock* clock) const;
 
    private:
-    std::unordered_map<Cache::DeleterFn, CacheEntryRole> role_map_;
+    UnorderedMap<Cache::DeleterFn, CacheEntryRole> role_map_;
     uint64_t GetLastDurationMicros() const;
   };
 
@@ -475,9 +483,10 @@ class InternalStats {
 
   // Store a mapping from the user-facing DB::Properties string to our
   // DBPropertyInfo struct used internally for retrieving properties.
-  static const std::unordered_map<std::string, DBPropertyInfo> ppt_name_to_info;
+  static const UnorderedMap<std::string, DBPropertyInfo> ppt_name_to_info;
 
  private:
+  void DumpDBMapStats(std::map<std::string, std::string>* db_stats);
   void DumpDBStats(std::string* value);
   void DumpCFMapStats(std::map<std::string, std::string>* cf_stats);
   void DumpCFMapStats(
@@ -610,6 +619,8 @@ class InternalStats {
   bool HandleCFStats(std::string* value, Slice suffix);
   bool HandleCFStatsNoFileHistogram(std::string* value, Slice suffix);
   bool HandleCFFileHistogram(std::string* value, Slice suffix);
+  bool HandleDBMapStats(std::map<std::string, std::string>* compaction_stats,
+                        Slice suffix);
   bool HandleDBStats(std::string* value, Slice suffix);
   bool HandleSsTables(std::string* value, Slice suffix);
   bool HandleAggregatedTableProperties(std::string* value, Slice suffix);
@@ -680,6 +691,9 @@ class InternalStats {
   bool HandleBlobStats(std::string* value, Slice suffix);
   bool HandleTotalBlobFileSize(uint64_t* value, DBImpl* db, Version* version);
   bool HandleLiveBlobFileSize(uint64_t* value, DBImpl* db, Version* version);
+  bool HandleLiveBlobFileGarbageSize(uint64_t* value, DBImpl* db,
+                                     Version* version);
+
   // Total number of background errors encountered. Every time a flush task
   // or compaction task fails, this counter is incremented. The failure can
   // be caused by any possible reason, including file system errors, out of

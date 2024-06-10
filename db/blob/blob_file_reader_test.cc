@@ -134,16 +134,15 @@ void WriteBlobFile(const ImmutableOptions& immutable_options,
 
 class BlobFileReaderTest : public testing::Test {
  protected:
-  BlobFileReaderTest() : mock_env_(Env::Default()) {}
-
-  MockEnv mock_env_;
+  BlobFileReaderTest() { mock_env_.reset(MockEnv::Create(Env::Default())); }
+  std::unique_ptr<Env> mock_env_;
 };
 
 TEST_F(BlobFileReaderTest, CreateReaderAndGetBlob) {
   Options options;
-  options.env = &mock_env_;
+  options.env = mock_env_.get();
   options.cf_paths.emplace_back(
-      test::PerThreadDBPath(&mock_env_,
+      test::PerThreadDBPath(mock_env_.get(),
                             "BlobFileReaderTest_CreateReaderAndGetBlob"),
       0);
   options.enable_blob_files = true;
@@ -180,13 +179,15 @@ TEST_F(BlobFileReaderTest, CreateReaderAndGetBlob) {
   ReadOptions read_options;
   read_options.verify_checksums = false;
 
+  constexpr FilePrefetchBuffer* prefetch_buffer = nullptr;
+
   {
     PinnableSlice value;
     uint64_t bytes_read = 0;
 
     ASSERT_OK(reader->GetBlob(read_options, keys[0], blob_offsets[0],
-                              blob_sizes[0], kNoCompression, &value,
-                              &bytes_read));
+                              blob_sizes[0], kNoCompression, prefetch_buffer,
+                              &value, &bytes_read));
     ASSERT_EQ(value, blobs[0]);
     ASSERT_EQ(bytes_read, blob_sizes[0]);
 
@@ -223,8 +224,8 @@ TEST_F(BlobFileReaderTest, CreateReaderAndGetBlob) {
     uint64_t bytes_read = 0;
 
     ASSERT_OK(reader->GetBlob(read_options, keys[1], blob_offsets[1],
-                              blob_sizes[1], kNoCompression, &value,
-                              &bytes_read));
+                              blob_sizes[1], kNoCompression, prefetch_buffer,
+                              &value, &bytes_read));
     ASSERT_EQ(value, blobs[1]);
 
     const uint64_t key_size = keys[1].size();
@@ -240,8 +241,8 @@ TEST_F(BlobFileReaderTest, CreateReaderAndGetBlob) {
 
     ASSERT_TRUE(reader
                     ->GetBlob(read_options, keys[0], blob_offsets[0] - 1,
-                              blob_sizes[0], kNoCompression, &value,
-                              &bytes_read)
+                              blob_sizes[0], kNoCompression, prefetch_buffer,
+                              &value, &bytes_read)
                     .IsCorruption());
     ASSERT_EQ(bytes_read, 0);
   }
@@ -253,8 +254,8 @@ TEST_F(BlobFileReaderTest, CreateReaderAndGetBlob) {
 
     ASSERT_TRUE(reader
                     ->GetBlob(read_options, keys[2], blob_offsets[2] + 1,
-                              blob_sizes[2], kNoCompression, &value,
-                              &bytes_read)
+                              blob_sizes[2], kNoCompression, prefetch_buffer,
+                              &value, &bytes_read)
                     .IsCorruption());
     ASSERT_EQ(bytes_read, 0);
   }
@@ -266,7 +267,8 @@ TEST_F(BlobFileReaderTest, CreateReaderAndGetBlob) {
 
     ASSERT_TRUE(reader
                     ->GetBlob(read_options, keys[0], blob_offsets[0],
-                              blob_sizes[0], kZSTD, &value, &bytes_read)
+                              blob_sizes[0], kZSTD, prefetch_buffer, &value,
+                              &bytes_read)
                     .IsCorruption());
     ASSERT_EQ(bytes_read, 0);
   }
@@ -281,8 +283,8 @@ TEST_F(BlobFileReaderTest, CreateReaderAndGetBlob) {
                     ->GetBlob(read_options, shorter_key,
                               blob_offsets[0] -
                                   (keys[0].size() - sizeof(shorter_key) + 1),
-                              blob_sizes[0], kNoCompression, &value,
-                              &bytes_read)
+                              blob_sizes[0], kNoCompression, prefetch_buffer,
+                              &value, &bytes_read)
                     .IsCorruption());
     ASSERT_EQ(bytes_read, 0);
 
@@ -324,8 +326,8 @@ TEST_F(BlobFileReaderTest, CreateReaderAndGetBlob) {
 
     ASSERT_TRUE(reader
                     ->GetBlob(read_options, incorrect_key, blob_offsets[0],
-                              blob_sizes[0], kNoCompression, &value,
-                              &bytes_read)
+                              blob_sizes[0], kNoCompression, prefetch_buffer,
+                              &value, &bytes_read)
                     .IsCorruption());
     ASSERT_EQ(bytes_read, 0);
 
@@ -364,8 +366,8 @@ TEST_F(BlobFileReaderTest, CreateReaderAndGetBlob) {
 
     ASSERT_TRUE(reader
                     ->GetBlob(read_options, keys[1], blob_offsets[1],
-                              blob_sizes[1] + 1, kNoCompression, &value,
-                              &bytes_read)
+                              blob_sizes[1] + 1, kNoCompression,
+                              prefetch_buffer, &value, &bytes_read)
                     .IsCorruption());
     ASSERT_EQ(bytes_read, 0);
 
@@ -400,9 +402,10 @@ TEST_F(BlobFileReaderTest, Malformed) {
   // detect the error when we open it for reading
 
   Options options;
-  options.env = &mock_env_;
+  options.env = mock_env_.get();
   options.cf_paths.emplace_back(
-      test::PerThreadDBPath(&mock_env_, "BlobFileReaderTest_Malformed"), 0);
+      test::PerThreadDBPath(mock_env_.get(), "BlobFileReaderTest_Malformed"),
+      0);
   options.enable_blob_files = true;
 
   ImmutableOptions immutable_options(options);
@@ -452,9 +455,9 @@ TEST_F(BlobFileReaderTest, Malformed) {
 
 TEST_F(BlobFileReaderTest, TTL) {
   Options options;
-  options.env = &mock_env_;
+  options.env = mock_env_.get();
   options.cf_paths.emplace_back(
-      test::PerThreadDBPath(&mock_env_, "BlobFileReaderTest_TTL"), 0);
+      test::PerThreadDBPath(mock_env_.get(), "BlobFileReaderTest_TTL"), 0);
   options.enable_blob_files = true;
 
   ImmutableOptions immutable_options(options);
@@ -486,9 +489,9 @@ TEST_F(BlobFileReaderTest, TTL) {
 
 TEST_F(BlobFileReaderTest, ExpirationRangeInHeader) {
   Options options;
-  options.env = &mock_env_;
+  options.env = mock_env_.get();
   options.cf_paths.emplace_back(
-      test::PerThreadDBPath(&mock_env_,
+      test::PerThreadDBPath(mock_env_.get(),
                             "BlobFileReaderTest_ExpirationRangeInHeader"),
       0);
   options.enable_blob_files = true;
@@ -525,9 +528,9 @@ TEST_F(BlobFileReaderTest, ExpirationRangeInHeader) {
 
 TEST_F(BlobFileReaderTest, ExpirationRangeInFooter) {
   Options options;
-  options.env = &mock_env_;
+  options.env = mock_env_.get();
   options.cf_paths.emplace_back(
-      test::PerThreadDBPath(&mock_env_,
+      test::PerThreadDBPath(mock_env_.get(),
                             "BlobFileReaderTest_ExpirationRangeInFooter"),
       0);
   options.enable_blob_files = true;
@@ -564,9 +567,9 @@ TEST_F(BlobFileReaderTest, ExpirationRangeInFooter) {
 
 TEST_F(BlobFileReaderTest, IncorrectColumnFamily) {
   Options options;
-  options.env = &mock_env_;
+  options.env = mock_env_.get();
   options.cf_paths.emplace_back(
-      test::PerThreadDBPath(&mock_env_,
+      test::PerThreadDBPath(mock_env_.get(),
                             "BlobFileReaderTest_IncorrectColumnFamily"),
       0);
   options.enable_blob_files = true;
@@ -602,9 +605,10 @@ TEST_F(BlobFileReaderTest, IncorrectColumnFamily) {
 
 TEST_F(BlobFileReaderTest, BlobCRCError) {
   Options options;
-  options.env = &mock_env_;
+  options.env = mock_env_.get();
   options.cf_paths.emplace_back(
-      test::PerThreadDBPath(&mock_env_, "BlobFileReaderTest_BlobCRCError"), 0);
+      test::PerThreadDBPath(mock_env_.get(), "BlobFileReaderTest_BlobCRCError"),
+      0);
   options.enable_blob_files = true;
 
   ImmutableOptions immutable_options(options);
@@ -641,12 +645,14 @@ TEST_F(BlobFileReaderTest, BlobCRCError) {
 
   SyncPoint::GetInstance()->EnableProcessing();
 
+  constexpr FilePrefetchBuffer* prefetch_buffer = nullptr;
   PinnableSlice value;
   uint64_t bytes_read = 0;
 
   ASSERT_TRUE(reader
                   ->GetBlob(ReadOptions(), key, blob_offset, blob_size,
-                            kNoCompression, &value, &bytes_read)
+                            kNoCompression, prefetch_buffer, &value,
+                            &bytes_read)
                   .IsCorruption());
   ASSERT_EQ(bytes_read, 0);
 
@@ -660,9 +666,10 @@ TEST_F(BlobFileReaderTest, Compression) {
   }
 
   Options options;
-  options.env = &mock_env_;
+  options.env = mock_env_.get();
   options.cf_paths.emplace_back(
-      test::PerThreadDBPath(&mock_env_, "BlobFileReaderTest_Compression"), 0);
+      test::PerThreadDBPath(mock_env_.get(), "BlobFileReaderTest_Compression"),
+      0);
   options.enable_blob_files = true;
 
   ImmutableOptions immutable_options(options);
@@ -693,12 +700,15 @@ TEST_F(BlobFileReaderTest, Compression) {
   ReadOptions read_options;
   read_options.verify_checksums = false;
 
+  constexpr FilePrefetchBuffer* prefetch_buffer = nullptr;
+
   {
     PinnableSlice value;
     uint64_t bytes_read = 0;
 
     ASSERT_OK(reader->GetBlob(read_options, key, blob_offset, blob_size,
-                              kSnappyCompression, &value, &bytes_read));
+                              kSnappyCompression, prefetch_buffer, &value,
+                              &bytes_read));
     ASSERT_EQ(value, blob);
     ASSERT_EQ(bytes_read, blob_size);
   }
@@ -710,7 +720,8 @@ TEST_F(BlobFileReaderTest, Compression) {
     uint64_t bytes_read = 0;
 
     ASSERT_OK(reader->GetBlob(read_options, key, blob_offset, blob_size,
-                              kSnappyCompression, &value, &bytes_read));
+                              kSnappyCompression, prefetch_buffer, &value,
+                              &bytes_read));
     ASSERT_EQ(value, blob);
 
     constexpr uint64_t key_size = sizeof(key) - 1;
@@ -726,9 +737,9 @@ TEST_F(BlobFileReaderTest, UncompressionError) {
   }
 
   Options options;
-  options.env = &mock_env_;
+  options.env = mock_env_.get();
   options.cf_paths.emplace_back(
-      test::PerThreadDBPath(&mock_env_,
+      test::PerThreadDBPath(mock_env_.get(),
                             "BlobFileReaderTest_UncompressionError"),
       0);
   options.enable_blob_files = true;
@@ -768,12 +779,14 @@ TEST_F(BlobFileReaderTest, UncompressionError) {
 
   SyncPoint::GetInstance()->EnableProcessing();
 
+  constexpr FilePrefetchBuffer* prefetch_buffer = nullptr;
   PinnableSlice value;
   uint64_t bytes_read = 0;
 
   ASSERT_TRUE(reader
                   ->GetBlob(ReadOptions(), key, blob_offset, blob_size,
-                            kSnappyCompression, &value, &bytes_read)
+                            kSnappyCompression, prefetch_buffer, &value,
+                            &bytes_read)
                   .IsCorruption());
   ASSERT_EQ(bytes_read, 0);
 
@@ -785,13 +798,13 @@ class BlobFileReaderIOErrorTest
     : public testing::Test,
       public testing::WithParamInterface<std::string> {
  protected:
-  BlobFileReaderIOErrorTest()
-      : mock_env_(Env::Default()),
-        fault_injection_env_(&mock_env_),
-        sync_point_(GetParam()) {}
+  BlobFileReaderIOErrorTest() : sync_point_(GetParam()) {
+    mock_env_.reset(MockEnv::Create(Env::Default()));
+    fault_injection_env_.reset(new FaultInjectionTestEnv(mock_env_.get()));
+  }
 
-  MockEnv mock_env_;
-  FaultInjectionTestEnv fault_injection_env_;
+  std::unique_ptr<Env> mock_env_;
+  std::unique_ptr<FaultInjectionTestEnv> fault_injection_env_;
   std::string sync_point_;
 };
 
@@ -807,9 +820,9 @@ TEST_P(BlobFileReaderIOErrorTest, IOError) {
   // Simulates an I/O error during the specified step
 
   Options options;
-  options.env = &fault_injection_env_;
+  options.env = fault_injection_env_.get();
   options.cf_paths.emplace_back(
-      test::PerThreadDBPath(&fault_injection_env_,
+      test::PerThreadDBPath(fault_injection_env_.get(),
                             "BlobFileReaderIOErrorTest_IOError"),
       0);
   options.enable_blob_files = true;
@@ -831,8 +844,8 @@ TEST_P(BlobFileReaderIOErrorTest, IOError) {
                 &blob_offset, &blob_size);
 
   SyncPoint::GetInstance()->SetCallBack(sync_point_, [this](void* /* arg */) {
-    fault_injection_env_.SetFilesystemActive(false,
-                                             Status::IOError(sync_point_));
+    fault_injection_env_->SetFilesystemActive(false,
+                                              Status::IOError(sync_point_));
   });
   SyncPoint::GetInstance()->EnableProcessing();
 
@@ -852,12 +865,14 @@ TEST_P(BlobFileReaderIOErrorTest, IOError) {
   } else {
     ASSERT_OK(s);
 
+    constexpr FilePrefetchBuffer* prefetch_buffer = nullptr;
     PinnableSlice value;
     uint64_t bytes_read = 0;
 
     ASSERT_TRUE(reader
                     ->GetBlob(ReadOptions(), key, blob_offset, blob_size,
-                              kNoCompression, &value, &bytes_read)
+                              kNoCompression, prefetch_buffer, &value,
+                              &bytes_read)
                     .IsIOError());
     ASSERT_EQ(bytes_read, 0);
   }
@@ -870,10 +885,11 @@ class BlobFileReaderDecodingErrorTest
     : public testing::Test,
       public testing::WithParamInterface<std::string> {
  protected:
-  BlobFileReaderDecodingErrorTest()
-      : mock_env_(Env::Default()), sync_point_(GetParam()) {}
+  BlobFileReaderDecodingErrorTest() : sync_point_(GetParam()) {
+    mock_env_.reset(MockEnv::Create(Env::Default()));
+  }
 
-  MockEnv mock_env_;
+  std::unique_ptr<Env> mock_env_;
   std::string sync_point_;
 };
 
@@ -885,9 +901,9 @@ INSTANTIATE_TEST_CASE_P(BlobFileReaderTest, BlobFileReaderDecodingErrorTest,
 
 TEST_P(BlobFileReaderDecodingErrorTest, DecodingError) {
   Options options;
-  options.env = &mock_env_;
+  options.env = mock_env_.get();
   options.cf_paths.emplace_back(
-      test::PerThreadDBPath(&mock_env_,
+      test::PerThreadDBPath(mock_env_.get(),
                             "BlobFileReaderDecodingErrorTest_DecodingError"),
       0);
   options.enable_blob_files = true;
@@ -934,12 +950,14 @@ TEST_P(BlobFileReaderDecodingErrorTest, DecodingError) {
   } else {
     ASSERT_OK(s);
 
+    constexpr FilePrefetchBuffer* prefetch_buffer = nullptr;
     PinnableSlice value;
     uint64_t bytes_read = 0;
 
     ASSERT_TRUE(reader
                     ->GetBlob(ReadOptions(), key, blob_offset, blob_size,
-                              kNoCompression, &value, &bytes_read)
+                              kNoCompression, prefetch_buffer, &value,
+                              &bytes_read)
                     .IsCorruption());
     ASSERT_EQ(bytes_read, 0);
   }

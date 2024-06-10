@@ -27,6 +27,7 @@
 #include "rocksdb/system_clock.h"
 #include "rocksdb/table.h"
 #include "table/block_based/cachable_entry.h"
+#include "util/hash_containers.h"
 #include "util/string_util.h"
 
 namespace ROCKSDB_NAMESPACE {
@@ -58,6 +59,25 @@ const std::map<LevelStatType, LevelStat> InternalStats::compaction_level_stats =
         {LevelStatType::KEY_DROP, LevelStat{"KeyDrop", "KeyDrop"}},
         {LevelStatType::R_BLOB_GB, LevelStat{"RblobGB", "Rblob(GB)"}},
         {LevelStatType::W_BLOB_GB, LevelStat{"WblobGB", "Wblob(GB)"}},
+};
+
+const std::map<InternalStats::InternalDBStatsType, DBStatInfo>
+    InternalStats::db_stats_type_to_info = {
+        {InternalStats::kIntStatsWalFileBytes,
+         DBStatInfo{"db.wal_bytes_written"}},
+        {InternalStats::kIntStatsWalFileSynced, DBStatInfo{"db.wal_syncs"}},
+        {InternalStats::kIntStatsBytesWritten,
+         DBStatInfo{"db.user_bytes_written"}},
+        {InternalStats::kIntStatsNumKeysWritten,
+         DBStatInfo{"db.user_keys_written"}},
+        {InternalStats::kIntStatsWriteDoneByOther,
+         DBStatInfo{"db.user_writes_by_other"}},
+        {InternalStats::kIntStatsWriteDoneBySelf,
+         DBStatInfo{"db.user_writes_by_self"}},
+        {InternalStats::kIntStatsWriteWithWal,
+         DBStatInfo{"db.user_writes_with_wal"}},
+        {InternalStats::kIntStatsWriteStallMicros,
+         DBStatInfo{"db.user_write_stall_micros"}},
 };
 
 namespace {
@@ -285,6 +305,8 @@ static const std::string num_blob_files = "num-blob-files";
 static const std::string blob_stats = "blob-stats";
 static const std::string total_blob_file_size = "total-blob-file-size";
 static const std::string live_blob_file_size = "live-blob-file-size";
+static const std::string live_blob_file_garbage_size =
+    "live-blob-file-garbage-size";
 
 const std::string DB::Properties::kNumFilesAtLevelPrefix =
     rocksdb_prefix + num_files_at_level_prefix;
@@ -385,8 +407,10 @@ const std::string DB::Properties::kTotalBlobFileSize =
     rocksdb_prefix + total_blob_file_size;
 const std::string DB::Properties::kLiveBlobFileSize =
     rocksdb_prefix + live_blob_file_size;
+const std::string DB::Properties::kLiveBlobFileGarbageSize =
+    rocksdb_prefix + live_blob_file_garbage_size;
 
-const std::unordered_map<std::string, DBPropertyInfo>
+const UnorderedMap<std::string, DBPropertyInfo>
     InternalStats::ppt_name_to_info = {
         {DB::Properties::kNumFilesAtLevelPrefix,
          {false, &InternalStats::HandleNumFilesAtLevel, nullptr, nullptr,
@@ -408,7 +432,8 @@ const std::unordered_map<std::string, DBPropertyInfo>
          {false, &InternalStats::HandleCFFileHistogram, nullptr, nullptr,
           nullptr}},
         {DB::Properties::kDBStats,
-         {false, &InternalStats::HandleDBStats, nullptr, nullptr, nullptr}},
+         {false, &InternalStats::HandleDBStats, nullptr,
+          &InternalStats::HandleDBMapStats, nullptr}},
         {DB::Properties::kBlockCacheEntryStats,
          {true, &InternalStats::HandleBlockCacheEntryStats, nullptr,
           &InternalStats::HandleBlockCacheEntryStatsMap, nullptr}},
@@ -499,7 +524,7 @@ const std::unordered_map<std::string, DBPropertyInfo>
          {false, nullptr, &InternalStats::HandleLiveSstFilesSize, nullptr,
           nullptr}},
         {DB::Properties::kLiveSstFilesSizeAtTemperature,
-         {true, &InternalStats::HandleLiveSstFilesSizeAtTemperature, nullptr,
+         {false, &InternalStats::HandleLiveSstFilesSizeAtTemperature, nullptr,
           nullptr, nullptr}},
         {DB::Properties::kEstimatePendingCompactionBytes,
          {false, nullptr, &InternalStats::HandleEstimatePendingCompactionBytes,
@@ -542,6 +567,9 @@ const std::unordered_map<std::string, DBPropertyInfo>
         {DB::Properties::kLiveBlobFileSize,
          {false, nullptr, &InternalStats::HandleLiveBlobFileSize, nullptr,
           nullptr}},
+        {DB::Properties::kLiveBlobFileGarbageSize,
+         {false, nullptr, &InternalStats::HandleLiveBlobFileGarbageSize,
+          nullptr, nullptr}},
 };
 
 InternalStats::InternalStats(int num_levels, SystemClock* clock,
@@ -674,17 +702,21 @@ void InternalStats::CacheEntryRoleStats::ToMap(
     std::map<std::string, std::string>* values, SystemClock* clock) const {
   values->clear();
   auto& v = *values;
-  v["id"] = cache_id;
-  v["capacity"] = ROCKSDB_NAMESPACE::ToString(cache_capacity);
-  v["secs_for_last_collection"] =
+  v[BlockCacheEntryStatsMapKeys::CacheId()] = cache_id;
+  v[BlockCacheEntryStatsMapKeys::CacheCapacityBytes()] =
+      ROCKSDB_NAMESPACE::ToString(cache_capacity);
+  v[BlockCacheEntryStatsMapKeys::LastCollectionDurationSeconds()] =
       ROCKSDB_NAMESPACE::ToString(GetLastDurationMicros() / 1000000.0);
-  v["secs_since_last_collection"] = ROCKSDB_NAMESPACE::ToString(
-      (clock->NowMicros() - last_end_time_micros_) / 1000000U);
+  v[BlockCacheEntryStatsMapKeys::LastCollectionAgeSeconds()] =
+      ROCKSDB_NAMESPACE::ToString((clock->NowMicros() - last_end_time_micros_) /
+                                  1000000U);
   for (size_t i = 0; i < kNumCacheEntryRoles; ++i) {
-    std::string role = kCacheEntryRoleToHyphenString[i];
-    v["count." + role] = ROCKSDB_NAMESPACE::ToString(entry_counts[i]);
-    v["bytes." + role] = ROCKSDB_NAMESPACE::ToString(total_charges[i]);
-    v["percent." + role] =
+    auto role = static_cast<CacheEntryRole>(i);
+    v[BlockCacheEntryStatsMapKeys::EntryCount(role)] =
+        ROCKSDB_NAMESPACE::ToString(entry_counts[i]);
+    v[BlockCacheEntryStatsMapKeys::UsedBytes(role)] =
+        ROCKSDB_NAMESPACE::ToString(total_charges[i]);
+    v[BlockCacheEntryStatsMapKeys::UsedPercent(role)] =
         ROCKSDB_NAMESPACE::ToString(100.0 * total_charges[i] / cache_capacity);
   }
 }
@@ -737,42 +769,86 @@ bool InternalStats::HandleLiveSstFilesSizeAtTemperature(std::string* value,
 
 bool InternalStats::HandleNumBlobFiles(uint64_t* value, DBImpl* /*db*/,
                                        Version* /*version*/) {
-  const auto* vstorage = cfd_->current()->storage_info();
+  assert(value);
+  assert(cfd_);
+
+  const auto* current = cfd_->current();
+  assert(current);
+
+  const auto* vstorage = current->storage_info();
+  assert(vstorage);
+
   const auto& blob_files = vstorage->GetBlobFiles();
+
   *value = blob_files.size();
+
   return true;
 }
 
 bool InternalStats::HandleBlobStats(std::string* value, Slice /*suffix*/) {
+  assert(value);
+  assert(cfd_);
+
+  const auto* current = cfd_->current();
+  assert(current);
+
+  const auto* vstorage = current->storage_info();
+  assert(vstorage);
+
+  const auto blob_st = vstorage->GetBlobStats();
+
   std::ostringstream oss;
-  auto* current_version = cfd_->current();
-  const auto& blob_files = current_version->storage_info()->GetBlobFiles();
-  uint64_t current_num_blob_files = blob_files.size();
-  uint64_t current_file_size = 0;
-  uint64_t current_garbage_size = 0;
-  for (const auto& pair : blob_files) {
-    const auto& meta = pair.second;
-    current_file_size += meta->GetBlobFileSize();
-    current_garbage_size += meta->GetGarbageBlobBytes();
-  }
-  oss << "Number of blob files: " << current_num_blob_files
-      << "\nTotal size of blob files: " << current_file_size
-      << "\nTotal size of garbage in blob files: " << current_garbage_size
-      << '\n';
+
+  oss << "Number of blob files: " << vstorage->GetBlobFiles().size()
+      << "\nTotal size of blob files: " << blob_st.total_file_size
+      << "\nTotal size of garbage in blob files: " << blob_st.total_garbage_size
+      << "\nBlob file space amplification: " << blob_st.space_amp << '\n';
+
   value->append(oss.str());
+
   return true;
 }
 
 bool InternalStats::HandleTotalBlobFileSize(uint64_t* value, DBImpl* /*db*/,
                                             Version* /*version*/) {
+  assert(value);
+  assert(cfd_);
+
   *value = cfd_->GetTotalBlobFileSize();
+
   return true;
 }
 
 bool InternalStats::HandleLiveBlobFileSize(uint64_t* value, DBImpl* /*db*/,
                                            Version* /*version*/) {
-  const auto* vstorage = cfd_->current()->storage_info();
-  *value = vstorage->GetTotalBlobFileSize();
+  assert(value);
+  assert(cfd_);
+
+  const auto* current = cfd_->current();
+  assert(current);
+
+  const auto* vstorage = current->storage_info();
+  assert(vstorage);
+
+  *value = vstorage->GetBlobStats().total_file_size;
+
+  return true;
+}
+
+bool InternalStats::HandleLiveBlobFileGarbageSize(uint64_t* value,
+                                                  DBImpl* /*db*/,
+                                                  Version* /*version*/) {
+  assert(value);
+  assert(cfd_);
+
+  const auto* current = cfd_->current();
+  assert(current);
+
+  const auto* vstorage = current->storage_info();
+  assert(vstorage);
+
+  *value = vstorage->GetBlobStats().total_garbage_size;
+
   return true;
 }
 
@@ -895,6 +971,12 @@ bool InternalStats::HandleCFStatsNoFileHistogram(std::string* value,
 bool InternalStats::HandleCFFileHistogram(std::string* value,
                                           Slice /*suffix*/) {
   DumpCFFileHistogram(value);
+  return true;
+}
+
+bool InternalStats::HandleDBMapStats(
+    std::map<std::string, std::string>* db_stats, Slice /*suffix*/) {
+  DumpDBMapStats(db_stats);
   return true;
 }
 
@@ -1274,10 +1356,21 @@ bool InternalStats::HandleBlockCachePinnedUsage(uint64_t* value, DBImpl* /*db*/,
   return true;
 }
 
+void InternalStats::DumpDBMapStats(
+    std::map<std::string, std::string>* db_stats) {
+  for (int i = 0; i < static_cast<int>(kIntStatsNumMax); ++i) {
+    InternalDBStatsType type = static_cast<InternalDBStatsType>(i);
+    (*db_stats)[db_stats_type_to_info.at(type).property_name] =
+        std::to_string(GetDBStats(type));
+  }
+  double seconds_up = (clock_->NowMicros() - started_at_) / kMicrosInSec;
+  (*db_stats)["db.uptime"] = std::to_string(seconds_up);
+}
+
 void InternalStats::DumpDBStats(std::string* value) {
   char buf[1000];
   // DB-level stats, only available from default column family
-  double seconds_up = (clock_->NowMicros() - started_at_ + 1) / kMicrosInSec;
+  double seconds_up = (clock_->NowMicros() - started_at_) / kMicrosInSec;
   double interval_seconds_up = seconds_up - db_stats_snapshot_.seconds_up;
   snprintf(buf, sizeof(buf),
            "\n** DB Stats **\nUptime(secs): %.1f total, %.1f interval\n",
@@ -1314,8 +1407,10 @@ void InternalStats::DumpDBStats(std::string* value) {
            NumberToHumanString(write_other + write_self).c_str(),
            NumberToHumanString(num_keys_written).c_str(),
            NumberToHumanString(write_self).c_str(),
-           (write_other + write_self) / static_cast<double>(write_self + 1),
-           user_bytes_written / kGB, user_bytes_written / kMB / seconds_up);
+           (write_other + write_self) /
+               std::max(1.0, static_cast<double>(write_self)),
+           user_bytes_written / kGB,
+           user_bytes_written / kMB / std::max(seconds_up, 0.001));
   value->append(buf);
   // WAL
   snprintf(buf, sizeof(buf),
@@ -1323,8 +1418,8 @@ void InternalStats::DumpDBStats(std::string* value) {
            "%.2f writes per sync, written: %.2f GB, %.2f MB/s\n",
            NumberToHumanString(write_with_wal).c_str(),
            NumberToHumanString(wal_synced).c_str(),
-           write_with_wal / static_cast<double>(wal_synced + 1),
-           wal_bytes / kGB, wal_bytes / kMB / seconds_up);
+           write_with_wal / std::max(1.0, static_cast<double>(wal_synced)),
+           wal_bytes / kGB, wal_bytes / kMB / std::max(seconds_up, 0.001));
   value->append(buf);
   // Stall
   AppendHumanMicros(write_stall_micros, human_micros, kHumanMicrosLen, true);
@@ -1347,7 +1442,7 @@ void InternalStats::DumpDBStats(std::string* value) {
       NumberToHumanString(interval_num_keys_written).c_str(),
       NumberToHumanString(interval_write_self).c_str(),
       static_cast<double>(interval_write_other + interval_write_self) /
-          (interval_write_self + 1),
+          std::max(1.0, static_cast<double>(interval_write_self)),
       (user_bytes_written - db_stats_snapshot_.ingest_bytes) / kMB,
       (user_bytes_written - db_stats_snapshot_.ingest_bytes) / kMB /
           std::max(interval_seconds_up, 0.001)),
@@ -1358,15 +1453,15 @@ void InternalStats::DumpDBStats(std::string* value) {
   uint64_t interval_wal_synced = wal_synced - db_stats_snapshot_.wal_synced;
   uint64_t interval_wal_bytes = wal_bytes - db_stats_snapshot_.wal_bytes;
 
-  snprintf(
-      buf, sizeof(buf),
-      "Interval WAL: %s writes, %s syncs, "
-      "%.2f writes per sync, written: %.2f GB, %.2f MB/s\n",
-      NumberToHumanString(interval_write_with_wal).c_str(),
-      NumberToHumanString(interval_wal_synced).c_str(),
-      interval_write_with_wal / static_cast<double>(interval_wal_synced + 1),
-      interval_wal_bytes / kGB,
-      interval_wal_bytes / kMB / std::max(interval_seconds_up, 0.001));
+  snprintf(buf, sizeof(buf),
+           "Interval WAL: %s writes, %s syncs, "
+           "%.2f writes per sync, written: %.2f GB, %.2f MB/s\n",
+           NumberToHumanString(interval_write_with_wal).c_str(),
+           NumberToHumanString(interval_wal_synced).c_str(),
+           interval_write_with_wal /
+               std::max(1.0, static_cast<double>(interval_wal_synced)),
+           interval_wal_bytes / kGB,
+           interval_wal_bytes / kMB / std::max(interval_seconds_up, 0.001));
   value->append(buf);
 
   // Stall
@@ -1480,9 +1575,11 @@ void InternalStats::DumpCFMapStats(
     }
   }
   // Cumulative summary
-  double w_amp = (compaction_stats_sum->bytes_written +
-                  compaction_stats_sum->bytes_written_blob) /
-                 static_cast<double>(curr_ingest + 1);
+  double w_amp = (0 == curr_ingest)
+                     ? 0.0
+                     : (compaction_stats_sum->bytes_written +
+                        compaction_stats_sum->bytes_written_blob) /
+                           static_cast<double>(curr_ingest);
   // Stats summary across levels
   std::map<LevelStatType, double> sum_stats;
   PrepareLevelStats(&sum_stats, total_files, total_files_being_compacted,
@@ -1607,14 +1704,17 @@ void InternalStats::DumpCFStatsNoFileHistogram(std::string* value) {
     }
   }
 
+  const auto blob_st = vstorage->GetBlobStats();
+
   snprintf(buf, sizeof(buf),
-           "\nBlob file count: %" ROCKSDB_PRIszt ", total size: %.1f GB\n\n",
-           vstorage->GetBlobFiles().size(),
-           vstorage->GetTotalBlobFileSize() / kGB);
+           "\nBlob file count: %" ROCKSDB_PRIszt
+           ", total size: %.1f GB, garbage size: %.1f GB, space amp: %.1f\n\n",
+           vstorage->GetBlobFiles().size(), blob_st.total_file_size / kGB,
+           blob_st.total_garbage_size / kGB, blob_st.space_amp);
   value->append(buf);
 
   uint64_t now_micros = clock_->NowMicros();
-  double seconds_up = (now_micros - started_at_ + 1) / kMicrosInSec;
+  double seconds_up = (now_micros - started_at_) / kMicrosInSec;
   double interval_seconds_up = seconds_up - cf_stats_snapshot_.seconds_up;
   snprintf(buf, sizeof(buf), "Uptime(secs): %.1f total, %.1f interval\n",
            seconds_up, interval_seconds_up);
@@ -1664,8 +1764,10 @@ void InternalStats::DumpCFStatsNoFileHistogram(std::string* value) {
   snprintf(buf, sizeof(buf),
            "Cumulative compaction: %.2f GB write, %.2f MB/s write, "
            "%.2f GB read, %.2f MB/s read, %.1f seconds\n",
-           compact_bytes_write / kGB, compact_bytes_write / kMB / seconds_up,
-           compact_bytes_read / kGB, compact_bytes_read / kMB / seconds_up,
+           compact_bytes_write / kGB,
+           compact_bytes_write / kMB / std::max(seconds_up, 0.001),
+           compact_bytes_read / kGB,
+           compact_bytes_read / kMB / std::max(seconds_up, 0.001),
            compact_micros / kMicrosInSec);
   value->append(buf);
 

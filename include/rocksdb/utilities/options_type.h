@@ -33,10 +33,8 @@ enum class OptionType {
   kDouble,
   kCompactionStyle,
   kCompactionPri,
-  kSliceTransform,
   kCompressionType,
   kCompactionStopStyle,
-  kFilterPolicy,
   kChecksumType,
   kEncodingType,
   kEnv,
@@ -46,6 +44,7 @@ enum class OptionType {
   kConfigurable,
   kCustomizable,
   kEncodedString,
+  kTemperature,
   kUnknown,
 };
 
@@ -575,6 +574,7 @@ class OptionTypeInfo {
   // or if the flags specify allow null.
   bool CanBeNull() const {
     return (IsEnabled(OptionTypeFlags::kAllowNull) ||
+            IsEnabled(OptionVerificationType::kByNameAllowNull) ||
             IsEnabled(OptionVerificationType::kByNameAllowFromNull));
   }
 

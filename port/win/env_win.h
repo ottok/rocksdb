@@ -79,7 +79,9 @@ class WinClock : public SystemClock {
   WinClock();
   virtual ~WinClock() {}
 
-  const char* Name() const override { return "WindowsClock"; }
+  static const char* kClassName() { return "WindowsClock"; }
+  const char* Name() const override { return kClassName(); }
+  const char* NickName() const override { return kDefaultName(); }
 
   uint64_t NowMicros() override;
 
@@ -108,7 +110,10 @@ class WinFileSystem : public FileSystem {
   static const std::shared_ptr<WinFileSystem>& Default();
   WinFileSystem(const std::shared_ptr<SystemClock>& clock);
   ~WinFileSystem() {}
-  const char* Name() const { return "WinFS"; }
+  static const char* kClassName() { return "WinFS"; }
+  const char* Name() const override { return kClassName(); }
+  const char* NickName() const { return kDefaultName(); }
+
   static size_t GetSectorSize(const std::string& fname);
   size_t GetPageSize() const { return page_size_; }
   size_t GetAllocationGranularity() const { return allocation_granularity_; }
@@ -196,7 +201,7 @@ class WinFileSystem : public FileSystem {
                             IODebugContext* dbg) override;
 
   // Create and returns a default logger (an instance of EnvLogger) for storing
-  // informational messages. Derived classes can overide to provide custom
+  // informational messages. Derived classes can override to provide custom
   // logger.
   IOStatus NewLogger(const std::string& fname, const IOOptions& io_opts,
                      std::shared_ptr<Logger>* result,
@@ -255,6 +260,9 @@ class WinEnv : public CompositeEnv {
   WinEnv();
 
   ~WinEnv();
+  static const char* kClassName() { return "WinEnv"; }
+  const char* Name() const override { return kClassName(); }
+  const char* NickName() const override { return kDefaultName(); }
 
   Status GetHostName(char* name, uint64_t len) override;
 
