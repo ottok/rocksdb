@@ -1,7 +1,7 @@
-// Copyright (c) 2015, Facebook, Inc.  All rights reserved.
-// This source code is licensed under the BSD-style license found in the
-// LICENSE file in the root directory of this source tree. An additional grant
-// of patent rights can be found in the PATENTS file in the same directory.
+// Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
+//  This source code is licensed under both the GPLv2 (found in the
+//  COPYING file in the root directory) and Apache 2.0 License
+//  (found in the LICENSE.Apache file in the root directory).
 
 #pragma once
 
@@ -19,6 +19,10 @@ namespace rocksdb {
 class Iterator;
 class TransactionDB;
 class WriteBatchWithIndex;
+
+using TransactionName = std::string;
+
+using TransactionID = uint64_t;
 
 // Provides notification to the caller of SetSnapshotOnNextOperation when
 // the actual snapshot gets created
@@ -114,6 +118,9 @@ class Transaction {
   // longer be valid and should be discarded after a call to ClearSnapshot().
   virtual void ClearSnapshot() = 0;
 
+  // Prepare the current transation for 2PC
+  virtual Status Prepare() = 0;
+
   // Write all batched keys to the db atomically.
   //
   // Returns OK on success.
@@ -132,7 +139,7 @@ class Transaction {
   virtual Status Commit() = 0;
 
   // Discard all batched writes in this transaction.
-  virtual void Rollback() = 0;
+  virtual Status Rollback() = 0;
 
   // Records the state of the transaction for future calls to
   // RollbackToSavePoint().  May be called multiple times to set multiple save
@@ -202,10 +209,11 @@ class Transaction {
   // or other errors if this key could not be read.
   virtual Status GetForUpdate(const ReadOptions& options,
                               ColumnFamilyHandle* column_family,
-                              const Slice& key, std::string* value) = 0;
+                              const Slice& key, std::string* value,
+                              bool exclusive = true) = 0;
 
   virtual Status GetForUpdate(const ReadOptions& options, const Slice& key,
-                              std::string* value) = 0;
+                              std::string* value, bool exclusive = true) = 0;
 
   virtual std::vector<Status> MultiGetForUpdate(
       const ReadOptions& options,
@@ -341,7 +349,7 @@ class Transaction {
   // committed.
   //
   // Note:  You should not write or delete anything from the batch directly and
-  // should only use the the functions in the Transaction class to
+  // should only use the functions in the Transaction class to
   // write to this transaction.
   virtual WriteBatchWithIndex* GetWriteBatch() = 0;
 
@@ -351,14 +359,80 @@ class Transaction {
   virtual void SetLockTimeout(int64_t timeout) = 0;
 
   // Return the WriteOptions that will be used during Commit()
-  virtual const WriteOptions* GetWriteOptions() = 0;
+  virtual WriteOptions* GetWriteOptions() = 0;
 
   // Reset the WriteOptions that will be used during Commit().
   virtual void SetWriteOptions(const WriteOptions& write_options) = 0;
 
+  // If this key was previously fetched in this transaction using
+  // GetForUpdate/MultigetForUpdate(), calling UndoGetForUpdate will tell
+  // the transaction that it no longer needs to do any conflict checking
+  // for this key.
+  //
+  // If a key has been fetched N times via GetForUpdate/MultigetForUpdate(),
+  // then UndoGetForUpdate will only have an effect if it is also called N
+  // times.  If this key has been written to in this transaction,
+  // UndoGetForUpdate() will have no effect.
+  //
+  // If SetSavePoint() has been called after the GetForUpdate(),
+  // UndoGetForUpdate() will not have any effect.
+  //
+  // If this Transaction was created by an OptimisticTransactionDB,
+  // calling UndoGetForUpdate can affect whether this key is conflict checked
+  // at commit time.
+  // If this Transaction was created by a TransactionDB,
+  // calling UndoGetForUpdate may release any held locks for this key.
+  virtual void UndoGetForUpdate(ColumnFamilyHandle* column_family,
+                                const Slice& key) = 0;
+  virtual void UndoGetForUpdate(const Slice& key) = 0;
+
+  virtual Status RebuildFromWriteBatch(WriteBatch* src_batch) = 0;
+
+  virtual WriteBatch* GetCommitTimeWriteBatch() = 0;
+
+  virtual void SetLogNumber(uint64_t log) { log_number_ = log; }
+
+  virtual uint64_t GetLogNumber() const { return log_number_; }
+
+  virtual Status SetName(const TransactionName& name) = 0;
+
+  virtual TransactionName GetName() const { return name_; }
+
+  virtual TransactionID GetID() const { return 0; }
+
+  virtual bool IsDeadlockDetect() const { return false; }
+
+  virtual std::vector<TransactionID> GetWaitingTxns(uint32_t* column_family_id,
+                                                    std::string* key) const {
+    assert(false);
+    return std::vector<TransactionID>();
+  }
+
+  enum TransactionState {
+    STARTED = 0,
+    AWAITING_PREPARE = 1,
+    PREPARED = 2,
+    AWAITING_COMMIT = 3,
+    COMMITED = 4,
+    AWAITING_ROLLBACK = 5,
+    ROLLEDBACK = 6,
+    LOCKS_STOLEN = 7,
+  };
+
+  TransactionState GetState() const { return txn_state_; }
+  void SetState(TransactionState state) { txn_state_ = state; }
+
  protected:
   explicit Transaction(const TransactionDB* db) {}
   Transaction() {}
+
+  // the log in which the prepared section for this txn resides
+  // (for two phase commit)
+  uint64_t log_number_;
+  TransactionName name_;
+
+  // Execution status of the transaction.
+  std::atomic<TransactionState> txn_state_;
 
  private:
   // No copying allowed

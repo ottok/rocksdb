@@ -102,7 +102,7 @@ if [[ $skip_low_pri_tests == 1 ]]; then
   echo "Skipping some non-critical tests because SKIP_LOW_PRI_TESTS is set."
 fi
 
-output_dir="/tmp/output"
+output_dir="${TMPDIR:-/tmp}/output"
 
 ARGS="\
 OUTPUT_DIR=$output_dir \
@@ -263,6 +263,11 @@ for num_thr in "${nthreads[@]}" ; do
       DB_BENCH_NO_SYNC=1 NUM_NEXTS_PER_SEEK=$nps ./tools/benchmark.sh revrangewhilemerging
   fi
 done
+
+###### Universal compaction tests.
+
+# Use a single thread to reduce the variability in the benchmark.
+env $ARGS COMPACTION_TEST=1 NUM_THREADS=1 ./tools/benchmark.sh universal_compaction
 
 if [[ $skip_low_pri_tests != 1 ]]; then
   echo bulkload > $output_dir/report2.txt

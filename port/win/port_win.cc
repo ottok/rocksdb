@@ -1,7 +1,7 @@
-//  Copyright (c) 2013, Facebook, Inc.  All rights reserved.
-//  This source code is licensed under the BSD-style license found in the
-//  LICENSE file in the root directory of this source tree. An additional grant
-//  of patent rights can be found in the PATENTS file in the same directory.
+//  Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
+//  This source code is licensed under both the GPLv2 (found in the
+//  COPYING file in the root directory) and Apache 2.0 License
+//  (found in the LICENSE.Apache file in the root directory).
 //
 // Copyright (c) 2011 The LevelDB Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
@@ -40,7 +40,7 @@ void gettimeofday(struct timeval* tv, struct timezone* /* tz */) {
   seconds secNow(duration_cast<seconds>(usNow));
 
   tv->tv_sec = static_cast<long>(secNow.count());
-  tv->tv_usec = static_cast<long>(usNow.count() - 
+  tv->tv_usec = static_cast<long>(usNow.count() -
       duration_cast<microseconds>(secNow).count());
 }
 
@@ -142,7 +142,7 @@ DIR* opendir(const char* name) {
     return nullptr;
   }
 
-  strncpy_s(dir->entry_.d_name, dir->data_.name, strlen(dir->data_.name));
+  strcpy_s(dir->entry_.d_name, sizeof(dir->entry_.d_name), dir->data_.name);
 
   return dir.release();
 }
@@ -164,7 +164,7 @@ struct dirent* readdir(DIR* dirp) {
     return nullptr;
   }
 
-  strncpy_s(dirp->entry_.d_name, dirp->data_.name, strlen(dirp->data_.name));
+  strcpy_s(dirp->entry_.d_name, sizeof(dirp->entry_.d_name), dirp->data_.name);
 
   return &dirp->entry_;
 }
@@ -233,6 +233,8 @@ int GetMaxOpenFiles() { return -1; }
 
 #include "jemalloc/jemalloc.h"
 
+#ifndef JEMALLOC_NON_INIT
+
 namespace rocksdb {
 
 namespace port {
@@ -277,6 +279,8 @@ JEMALLOC_SECTION(".CRT$XCT") JEMALLOC_ATTR(used) static const void(
 #endif  // _WIN64
 
 }  // extern "C"
+
+#endif // JEMALLOC_NON_INIT
 
 // Global operators to be replaced by a linker
 

@@ -1,7 +1,7 @@
-//  Copyright (c) 2013, Facebook, Inc.  All rights reserved.
-//  This source code is licensed under the BSD-style license found in the
-//  LICENSE file in the root directory of this source tree. An additional grant
-//  of patent rights can be found in the PATENTS file in the same directory.
+//  Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
+//  This source code is licensed under both the GPLv2 (found in the
+//  COPYING file in the root directory) and Apache 2.0 License
+//  (found in the LICENSE.Apache file in the root directory).
 
 #ifndef ROCKSDB_LITE
 
@@ -10,13 +10,13 @@
 #include <string>
 #include <tuple>
 
-#include "db/compaction_job.h"
 #include "db/column_family.h"
+#include "db/compaction_job.h"
 #include "db/version_set.h"
-#include "db/writebuffer.h"
 #include "rocksdb/cache.h"
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
+#include "rocksdb/write_buffer_manager.h"
 #include "table/mock_table.h"
 #include "util/file_reader_writer.h"
 #include "util/string_util.h"
@@ -68,11 +68,12 @@ class CompactionJobTest : public testing::Test {
   CompactionJobTest()
       : env_(Env::Default()),
         dbname_(test::TmpDir() + "/compaction_job_test"),
-        mutable_cf_options_(Options(), ImmutableCFOptions(Options())),
+        db_options_(),
+        mutable_cf_options_(cf_options_),
         table_cache_(NewLRUCache(50000, 16)),
-        write_buffer_(db_options_.db_write_buffer_size),
+        write_buffer_manager_(db_options_.db_write_buffer_size),
         versions_(new VersionSet(dbname_, &db_options_, env_options_,
-                                 table_cache_.get(), &write_buffer_,
+                                 table_cache_.get(), &write_buffer_manager_,
                                  &write_controller_)),
         shutting_down_(false),
         mock_table_factory_(new mock::MockTableFactory()) {
@@ -141,6 +142,7 @@ class CompactionJobTest : public testing::Test {
   }
 
   void SetLastSequence(const SequenceNumber sequence_number) {
+    versions_->SetLastToBeWrittenSequence(sequence_number + 1);
     versions_->SetLastSequence(sequence_number + 1);
   }
 
@@ -239,10 +241,10 @@ class CompactionJobTest : public testing::Test {
       num_input_files += level_files.size();
     }
 
-    Compaction compaction(cfd->current()->storage_info(),
+    Compaction compaction(cfd->current()->storage_info(), *cfd->ioptions(),
                           *cfd->GetLatestMutableCFOptions(),
-                          compaction_input_files, 1, 1024 * 1024, 10, 0,
-                          kNoCompression, {}, true);
+                          compaction_input_files, 1, 1024 * 1024,
+                          10 * 1024 * 1024, 0, kNoCompression, {}, true);
     compaction.SetInputVersion(cfd->current());
 
     LogBuffer log_buffer(InfoLogLevel::INFO_LEVEL, db_options_.info_log.get());
@@ -250,9 +252,9 @@ class CompactionJobTest : public testing::Test {
     EventLogger event_logger(db_options_.info_log.get());
     CompactionJob compaction_job(
         0, &compaction, db_options_, env_options_, versions_.get(),
-        &shutting_down_, &log_buffer, nullptr, nullptr, nullptr, snapshots,
-        earliest_write_conflict_snapshot, table_cache_, &event_logger, false,
-        false, dbname_, &compaction_job_stats_);
+        &shutting_down_, &log_buffer, nullptr, nullptr, nullptr, &mutex_,
+        &bg_error_, snapshots, earliest_write_conflict_snapshot, table_cache_,
+        &event_logger, false, false, dbname_, &compaction_job_stats_);
 
     VerifyInitializationOfCompactionJobStats(compaction_job_stats_);
 
@@ -262,8 +264,7 @@ class CompactionJobTest : public testing::Test {
     s = compaction_job.Run();
     ASSERT_OK(s);
     mutex_.Lock();
-    ASSERT_OK(compaction_job.Install(*cfd->GetLatestMutableCFOptions(),
-                                     &mutex_));
+    ASSERT_OK(compaction_job.Install(*cfd->GetLatestMutableCFOptions()));
     mutex_.Unlock();
 
     if (expected_results.size() == 0) {
@@ -281,12 +282,12 @@ class CompactionJobTest : public testing::Test {
   Env* env_;
   std::string dbname_;
   EnvOptions env_options_;
+  ImmutableDBOptions db_options_;
+  ColumnFamilyOptions cf_options_;
   MutableCFOptions mutable_cf_options_;
   std::shared_ptr<Cache> table_cache_;
   WriteController write_controller_;
-  DBOptions db_options_;
-  ColumnFamilyOptions cf_options_;
-  WriteBuffer write_buffer_;
+  WriteBufferManager write_buffer_manager_;
   std::unique_ptr<VersionSet> versions_;
   InstrumentedMutex mutex_;
   std::atomic<bool> shutting_down_;
@@ -295,6 +296,7 @@ class CompactionJobTest : public testing::Test {
   ColumnFamilyData* cfd_;
   std::unique_ptr<CompactionFilter> compaction_filter_;
   std::shared_ptr<MergeOperator> merge_op_;
+  Status bg_error_;
 };
 
 TEST_F(CompactionJobTest, Simple) {
@@ -330,6 +332,24 @@ TEST_F(CompactionJobTest, SimpleDeletion) {
 
   auto expected_results =
       mock::MakeMockFile({{KeyStr("b", 0U, kTypeValue), "val"}});
+
+  SetLastSequence(4U);
+  auto files = cfd_->current()->storage_info()->LevelFiles(0);
+  RunCompaction({files}, expected_results);
+}
+
+TEST_F(CompactionJobTest, OutputNothing) {
+  NewDB();
+
+  auto file1 = mock::MakeMockFile({{KeyStr("a", 1U, kTypeValue), "val"}});
+
+  AddMockFile(file1);
+
+  auto file2 = mock::MakeMockFile({{KeyStr("a", 2U, kTypeDeletion), ""}});
+
+  AddMockFile(file2);
+
+  auto expected_results = mock::MakeMockFile();
 
   SetLastSequence(4U);
   auto files = cfd_->current()->storage_info()->LevelFiles(0);

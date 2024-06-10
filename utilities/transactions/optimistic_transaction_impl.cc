@@ -1,7 +1,7 @@
-//  Copyright (c) 2015, Facebook, Inc.  All rights reserved.
-//  This source code is licensed under the BSD-style license found in the
-//  LICENSE file in the root directory of this source tree. An additional grant
-//  of patent rights can be found in the PATENTS file in the same directory.
+//  Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
+//  This source code is licensed under both the GPLv2 (found in the
+//  COPYING file in the root directory) and Apache 2.0 License
+//  (found in the LICENSE.Apache file in the root directory).
 
 #ifndef ROCKSDB_LITE
 
@@ -28,9 +28,21 @@ OptimisticTransactionImpl::OptimisticTransactionImpl(
     OptimisticTransactionDB* txn_db, const WriteOptions& write_options,
     const OptimisticTransactionOptions& txn_options)
     : TransactionBaseImpl(txn_db->GetBaseDB(), write_options), txn_db_(txn_db) {
+  Initialize(txn_options);
+}
+
+void OptimisticTransactionImpl::Initialize(
+    const OptimisticTransactionOptions& txn_options) {
   if (txn_options.set_snapshot) {
     SetSnapshot();
   }
+}
+
+void OptimisticTransactionImpl::Reinitialize(
+    OptimisticTransactionDB* txn_db, const WriteOptions& write_options,
+    const OptimisticTransactionOptions& txn_options) {
+  TransactionBaseImpl::Reinitialize(txn_db->GetBaseDB(), write_options);
+  Initialize(txn_options);
 }
 
 OptimisticTransactionImpl::~OptimisticTransactionImpl() {
@@ -38,6 +50,11 @@ OptimisticTransactionImpl::~OptimisticTransactionImpl() {
 
 void OptimisticTransactionImpl::Clear() {
   TransactionBaseImpl::Clear();
+}
+
+Status OptimisticTransactionImpl::Prepare() {
+  return Status::InvalidArgument(
+      "Two phase commit not supported for optimistic transactions.");
 }
 
 Status OptimisticTransactionImpl::Commit() {
@@ -63,11 +80,17 @@ Status OptimisticTransactionImpl::Commit() {
   return s;
 }
 
-void OptimisticTransactionImpl::Rollback() { Clear(); }
+Status OptimisticTransactionImpl::Rollback() {
+  Clear();
+  return Status::OK();
+}
 
 // Record this key so that we can check it for conflicts at commit time.
+//
+// 'exclusive' is unused for OptimisticTransaction.
 Status OptimisticTransactionImpl::TryLock(ColumnFamilyHandle* column_family,
-                                          const Slice& key, bool untracked) {
+                                          const Slice& key, bool read_only,
+                                          bool exclusive, bool untracked) {
   if (untracked) {
     return Status::OK();
   }
@@ -84,7 +107,7 @@ Status OptimisticTransactionImpl::TryLock(ColumnFamilyHandle* column_family,
 
   std::string key_str = key.ToString();
 
-  TrackKey(cfh_id, key_str, seq);
+  TrackKey(cfh_id, key_str, seq, read_only, exclusive);
 
   // Always return OK. Confilct checking will happen at commit time.
   return Status::OK();
@@ -108,6 +131,10 @@ Status OptimisticTransactionImpl::CheckTransactionForConflicts(DB* db) {
   // for conflicts.
   return TransactionUtil::CheckKeysForConflicts(db_impl, GetTrackedKeys(),
                                                 true /* cache_only */);
+}
+
+Status OptimisticTransactionImpl::SetName(const TransactionName& name) {
+  return Status::InvalidArgument("Optimistic transactions cannot be named.");
 }
 
 }  // namespace rocksdb

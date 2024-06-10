@@ -1,7 +1,7 @@
-// Copyright (c) 2015, Facebook, Inc.  All rights reserved.
-// This source code is licensed under the BSD-style license found in the
-// LICENSE file in the root directory of this source tree. An additional grant
-// of patent rights can be found in the PATENTS file in the same directory.
+// Copyright (c) 2011-present, Facebook, Inc.  All rights reserved.
+//  This source code is licensed under both the GPLv2 (found in the
+//  COPYING file in the root directory) and Apache 2.0 License
+//  (found in the LICENSE.Apache file in the root directory).
 
 #pragma once
 
@@ -32,11 +32,14 @@ class TransactionBaseImpl : public Transaction {
   // Remove pending operations queued in this transaction.
   virtual void Clear();
 
+  void Reinitialize(DB* db, const WriteOptions& write_options);
+
   // Called before executing Put, Merge, Delete, and GetForUpdate.  If TryLock
   // returns non-OK, the Put/Merge/Delete/GetForUpdate will be failed.
   // untracked will be true if called from PutUntracked, DeleteUntracked, or
   // MergeUntracked.
   virtual Status TryLock(ColumnFamilyHandle* column_family, const Slice& key,
+                         bool read_only, bool exclusive,
                          bool untracked = false) = 0;
 
   void SetSavePoint() override;
@@ -53,11 +56,12 @@ class TransactionBaseImpl : public Transaction {
 
   Status GetForUpdate(const ReadOptions& options,
                       ColumnFamilyHandle* column_family, const Slice& key,
-                      std::string* value) override;
+                      std::string* value, bool exclusive) override;
 
   Status GetForUpdate(const ReadOptions& options, const Slice& key,
-                      std::string* value) override {
-    return GetForUpdate(options, db_->DefaultColumnFamily(), key, value);
+                      std::string* value, bool exclusive) override {
+    return GetForUpdate(options, db_->DefaultColumnFamily(), key, value,
+                        exclusive);
   }
 
   std::vector<Status> MultiGet(
@@ -192,11 +196,17 @@ class TransactionBaseImpl : public Transaction {
 
   uint64_t GetNumKeys() const override;
 
+  void UndoGetForUpdate(ColumnFamilyHandle* column_family,
+                        const Slice& key) override;
+  void UndoGetForUpdate(const Slice& key) override {
+    return UndoGetForUpdate(nullptr, key);
+  };
+
   // Get list of keys in this transaction that must not have any conflicts
   // with writes in other transactions.
   const TransactionKeyMap& GetTrackedKeys() const { return tracked_keys_; }
 
-  const WriteOptions* GetWriteOptions() override { return &write_options_; }
+  WriteOptions* GetWriteOptions() override { return &write_options_; }
 
   void SetWriteOptions(const WriteOptions& write_options) override {
     write_options_ = write_options;
@@ -205,26 +215,45 @@ class TransactionBaseImpl : public Transaction {
   // Used for memory management for snapshot_
   void ReleaseSnapshot(const Snapshot* snapshot, DB* db);
 
+  // iterates over the given batch and makes the appropriate inserts.
+  // used for rebuilding prepared transactions after recovery.
+  Status RebuildFromWriteBatch(WriteBatch* src_batch) override;
+
+  WriteBatch* GetCommitTimeWriteBatch() override;
+
  protected:
   // Add a key to the list of tracked keys.
+  //
   // seqno is the earliest seqno this key was involved with this transaction.
-  void TrackKey(uint32_t cfh_id, const std::string& key, SequenceNumber seqno);
+  // readonly should be set to true if no data was written for this key
+  void TrackKey(uint32_t cfh_id, const std::string& key, SequenceNumber seqno,
+                bool readonly, bool exclusive);
 
-  const TransactionKeyMap* GetTrackedKeysSinceSavePoint();
+  // Helper function to add a key to the given TransactionKeyMap
+  static void TrackKey(TransactionKeyMap* key_map, uint32_t cfh_id,
+                       const std::string& key, SequenceNumber seqno,
+                       bool readonly, bool exclusive);
+
+  // Called when UndoGetForUpdate determines that this key can be unlocked.
+  virtual void UnlockGetForUpdate(ColumnFamilyHandle* column_family,
+                                  const Slice& key) = 0;
+
+  std::unique_ptr<TransactionKeyMap> GetTrackedKeysSinceSavePoint();
 
   // Sets a snapshot if SetSnapshotOnNextOperation() has been called.
   void SetSnapshotIfNeeded();
 
-  DB* const db_;
+  DB* db_;
+  DBImpl* dbimpl_;
 
   WriteOptions write_options_;
 
   const Comparator* cmp_;
 
   // Stores that time the txn was constructed, in microseconds.
-  const uint64_t start_time_;
+  uint64_t start_time_;
 
-  // Stores the current snapshot that was was set by SetSnapshot or null if
+  // Stores the current snapshot that was set by SetSnapshot or null if
   // no snapshot is currently set.
   std::shared_ptr<const Snapshot> snapshot_;
 
@@ -255,9 +284,12 @@ class TransactionBaseImpl : public Transaction {
           num_merges_(num_merges) {}
   };
 
- private:
   // Records writes pending in this transaction
   WriteBatchWithIndex write_batch_;
+
+ private:
+  // batch to be written at commit time
+  WriteBatch commit_time_batch_;
 
   // Stack of the Snapshot saved at each save point.  Saved snapshots may be
   // nullptr if there was no snapshot at the time SetSavePoint() was called.
@@ -274,7 +306,7 @@ class TransactionBaseImpl : public Transaction {
   // WriteBatchWithIndex.
   // If false, future Put/Merge/Deletes will be inserted directly into the
   // underlying WriteBatch and not indexed in the WriteBatchWithIndex.
-  bool indexing_enabled_ = true;
+  bool indexing_enabled_;
 
   // SetSnapshotOnNextOperation() has been called and the snapshot has not yet
   // been reset.
@@ -285,9 +317,11 @@ class TransactionBaseImpl : public Transaction {
   std::shared_ptr<TransactionNotifier> snapshot_notifier_ = nullptr;
 
   Status TryLock(ColumnFamilyHandle* column_family, const SliceParts& key,
-                 bool untracked = false);
+                 bool read_only, bool exclusive, bool untracked = false);
 
   WriteBatchBase* GetBatchForWrite();
+
+  void SetSnapshotInternal(const Snapshot* snapshot);
 };
 
 }  // namespace rocksdb
