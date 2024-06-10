@@ -94,7 +94,8 @@ default_params = {
     "mark_for_compaction_one_file_in": lambda: 10 * random.randint(0, 1),
     "max_background_compactions": 20,
     "max_bytes_for_level_base": 10485760,
-    "max_key": 25000000,
+    # max_key has to be the same across invocations for verification to work, hence no lambda
+    "max_key": random.choice([100000, 25000000]),
     "max_write_buffer_number": 3,
     "mmap_read": lambda: random.randint(0, 1),
     # Setting `nooverwritepercent > 0` is only possible because we do not vary
@@ -116,7 +117,7 @@ default_params = {
     "sst_file_manager_bytes_per_truncate": lambda: random.choice([0, 1048576]),
     "long_running_snapshots": lambda: random.randint(0, 1),
     "subcompactions": lambda: random.randint(1, 4),
-    "target_file_size_base": 2097152,
+    "target_file_size_base": lambda: random.choice([512 * 1024, 2048 * 1024]),
     "target_file_size_multiplier": 2,
     "test_batches_snapshots": random.randint(0, 1),
     "top_level_index_pinning": lambda: random.randint(0, 3),
@@ -139,7 +140,7 @@ default_params = {
     "value_size_mult": 32,
     "verification_only": 0,
     "verify_checksum": 1,
-    "write_buffer_size": 4 * 1024 * 1024,
+    "write_buffer_size": lambda: random.choice([1024 * 1024, 4 * 1024 * 1024]),
     "writepercent": 35,
     "format_version": lambda: random.choice([2, 3, 4, 5, 6, 6]),
     "index_block_restart_interval": lambda: random.choice(range(1, 16)),
@@ -551,6 +552,9 @@ multiops_wp_txn_params = {
     "use_only_the_last_commit_time_batch_for_recovery": 1,
     "clear_wp_commit_cache_one_in": 10,
     "create_timestamped_snapshot_one_in": 0,
+    # sequence number can be advanced in SwitchMemtable::WriteRecoverableState() for WP.
+    # disable it for now until we find another way to test LockWAL().
+    "lock_wal_one_in": 0,
 }
 
 def finalize_and_sanitize(src_params):
@@ -567,11 +571,6 @@ def finalize_and_sanitize(src_params):
     if dest_params["mmap_read"] == 1:
         dest_params["use_direct_io_for_flush_and_compaction"] = 0
         dest_params["use_direct_reads"] = 0
-        if dest_params["file_checksum_impl"] != "none":
-            # TODO(T109283569): there is a bug in `GenerateOneFileChecksum()`,
-            # used by `IngestExternalFile()`, causing it to fail with mmap
-            # reads. Remove this once it is fixed.
-            dest_params["ingest_external_file_one_in"] = 0
     if (
         dest_params["use_direct_io_for_flush_and_compaction"] == 1
         or dest_params["use_direct_reads"] == 1
@@ -718,6 +717,7 @@ def finalize_and_sanitize(src_params):
         dest_params["delpercent"] += dest_params["delrangepercent"]
         dest_params["delrangepercent"] = 0
         dest_params["enable_blob_files"] = 0
+        dest_params["allow_setting_blob_options_dynamically"] = 0
         dest_params["atomic_flush"] = 0
         dest_params["allow_concurrent_memtable_write"] = 0
         dest_params["block_protection_bytes_per_key"] = 0
@@ -855,6 +855,15 @@ def exit_if_stderr_has_errors(stderr, print_stderr=True):
         print("TEST FAILED. Output has 'fail'!!!\n")
         sys.exit(2)
 
+def cleanup_after_success(dbname):
+    shutil.rmtree(dbname, True)
+    if cleanup_cmd is not None:
+        print("Running DB cleanup command - %s\n" % cleanup_cmd)
+        ret = os.system(cleanup_cmd)
+        if ret != 0:
+            print("TEST FAILED. DB cleanup returned error %d\n" % ret)
+            sys.exit(1)
+
 # This script runs and kills db_stress multiple times. It checks consistency
 # in case of unsafe crashes in RocksDB.
 def blackbox_crash_main(args, unknown_args):
@@ -910,7 +919,7 @@ def blackbox_crash_main(args, unknown_args):
     exit_if_stderr_has_errors(errs)
 
     # we need to clean up after ourselves -- only do this on test success
-    shutil.rmtree(dbname, True)
+    cleanup_after_success(dbname)
 
 
 # This python script runs db_stress multiple times. Some runs with
@@ -935,6 +944,8 @@ def whitebox_crash_main(args, unknown_args):
     kill_random_test = cmd_params["random_kill_odd"]
     kill_mode = 0
     prev_compaction_style = -1
+    succeeded = True
+    hit_timeout = False
     while time.time() < exit_time:
         if check_mode == 0:
             additional_opts = {
@@ -1056,16 +1067,16 @@ def whitebox_crash_main(args, unknown_args):
             print("Killing the run for running too long")
             break
 
-        expected = False
+        succeeded = False
         if additional_opts["kill_random_test"] is None and (retncode == 0):
             # we expect zero retncode if no kill option
-            expected = True
+            succeeded = True
         elif additional_opts["kill_random_test"] is not None and retncode <= 0:
             # When kill option is given, the test MIGHT kill itself.
             # If it does, negative retncode is expected. Otherwise 0.
-            expected = True
+            succeeded = True
 
-        if not expected:
+        if not succeeded:
             print("TEST FAILED. See kill option and exit code above!!!\n")
             sys.exit(1)
 
@@ -1075,15 +1086,7 @@ def whitebox_crash_main(args, unknown_args):
         # First half of the duration, keep doing kill test. For the next half,
         # try different modes.
         if time.time() > half_time:
-            # we need to clean up after ourselves -- only do this on test
-            # success
-            shutil.rmtree(dbname, True)
-            if cleanup_cmd is not None:
-                print("Running DB cleanup command - %s\n" % cleanup_cmd)
-                ret = os.system(cleanup_cmd)
-                if ret != 0:
-                    print("TEST FAILED. DB cleanup returned error %d\n" % ret)
-                    sys.exit(1)
+            cleanup_after_success(dbname)
             try:
                 os.mkdir(dbname)
             except OSError:
@@ -1095,6 +1098,12 @@ def whitebox_crash_main(args, unknown_args):
             check_mode = (check_mode + 1) % total_check_mode
 
         time.sleep(1)  # time to stabilize after a kill
+
+
+    # If successfully finished or timed out (we currently treat timed out test as passing)
+    # Clean up after ourselves
+    if succeeded or hit_timeout:
+        cleanup_after_success(dbname)
 
 
 def main():

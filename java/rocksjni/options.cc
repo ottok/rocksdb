@@ -37,6 +37,8 @@
 #include "rocksjni/portal.h"
 #include "rocksjni/statisticsjni.h"
 #include "rocksjni/table_filter_jnicallback.h"
+#include "rocksjni/table_properties_collector_factory.h"
+#include "util/stderr_logger.h"
 #include "utilities/merge_operators.h"
 
 /*
@@ -1083,14 +1085,31 @@ void Java_org_rocksdb_Options_setSstFileManager(
 /*
  * Class:     org_rocksdb_Options
  * Method:    setLogger
- * Signature: (JJ)V
+ * Signature: (JJB)V
  */
-void Java_org_rocksdb_Options_setLogger(JNIEnv*, jobject, jlong jhandle,
-                                        jlong jlogger_handle) {
-  std::shared_ptr<ROCKSDB_NAMESPACE::LoggerJniCallback>* pLogger =
-      reinterpret_cast<std::shared_ptr<ROCKSDB_NAMESPACE::LoggerJniCallback>*>(
-          jlogger_handle);
-  reinterpret_cast<ROCKSDB_NAMESPACE::Options*>(jhandle)->info_log = *pLogger;
+void Java_org_rocksdb_Options_setLogger(JNIEnv* env, jobject, jlong jhandle,
+                                        jlong jlogger_handle,
+                                        jbyte jlogger_type) {
+  auto* options = reinterpret_cast<ROCKSDB_NAMESPACE::Options*>(jhandle);
+  switch (jlogger_type) {
+    case 0x1:
+      // JAVA_IMPLEMENTATION
+      options->info_log =
+          *(reinterpret_cast<
+              std::shared_ptr<ROCKSDB_NAMESPACE::LoggerJniCallback>*>(
+              jlogger_handle));
+      break;
+    case 0x2:
+      // STDERR_IMPLEMENTATION
+      options->info_log =
+          *(reinterpret_cast<std::shared_ptr<ROCKSDB_NAMESPACE::StderrLogger>*>(
+              jlogger_handle));
+      break;
+    default:
+      ROCKSDB_NAMESPACE::IllegalArgumentExceptionJni::ThrowNew(
+          env, ROCKSDB_NAMESPACE::Status::InvalidArgument(
+                   ROCKSDB_NAMESPACE::Slice("Unknown value for LoggerType")));
+  }
 }
 
 /*
@@ -3927,6 +3946,62 @@ jint Java_org_rocksdb_Options_memtableMaxRangeDeletions(JNIEnv*, jobject,
   return static_cast<jint>(opts->memtable_max_range_deletions);
 }
 
+/*
+ * Class:     org_rocksdb_Options
+ * Method:    tablePropertiesCollectorFactory
+ * Signature: (J)[J
+ */
+jlongArray Java_org_rocksdb_Options_tablePropertiesCollectorFactory(
+    JNIEnv* env, jclass, jlong jhandle) {
+  auto* opt = reinterpret_cast<ROCKSDB_NAMESPACE::Options*>(jhandle);
+  const size_t size = opt->table_properties_collector_factories.size();
+  jlongArray retVal = env->NewLongArray(static_cast<jsize>(size));
+  if (retVal == nullptr) {
+    // exception thrown: OutOfMemoryError
+    return nullptr;
+  }
+  jlong* buf = env->GetLongArrayElements(retVal, NULL);
+  if (buf == nullptr) {
+    // exception thrown: OutOfMemoryError
+    return nullptr;
+  }
+
+  for (size_t i = 0; i < size; i++) {
+    auto* wrapper = new TablePropertiesCollectorFactoriesJniWrapper();
+    wrapper->table_properties_collector_factories =
+        opt->table_properties_collector_factories[i];
+    buf[i] = GET_CPLUSPLUS_POINTER(wrapper);
+  }
+  env->ReleaseLongArrayElements(retVal, buf, 0);
+  return retVal;
+}
+
+/*
+ * Class:     org_rocksdb_Options
+ * Method:    setTablePropertiesCollectorFactory
+ * Signature: (J[J)V
+ */
+void Java_org_rocksdb_Options_setTablePropertiesCollectorFactory(
+    JNIEnv* env, jclass, jlong jhandle, jlongArray j_factory_handles) {
+  auto* opt = reinterpret_cast<ROCKSDB_NAMESPACE::Options*>(jhandle);
+  const jsize size = env->GetArrayLength(j_factory_handles);
+
+  jlong* buf = env->GetLongArrayElements(j_factory_handles, NULL);
+  if (buf == nullptr) {
+    // exception thrown: OutOfMemoryError
+    return;
+  }
+
+  opt->table_properties_collector_factories.clear();
+  for (jsize i = 0; i < size; i++) {
+    auto* wrapper =
+        reinterpret_cast<TablePropertiesCollectorFactoriesJniWrapper*>(buf[i]);
+    opt->table_properties_collector_factories.emplace_back(
+        wrapper->table_properties_collector_factories);
+  }
+  env->ReleaseLongArrayElements(j_factory_handles, buf, JNI_ABORT);
+}
+
 //////////////////////////////////////////////////////////////////////////////
 // ROCKSDB_NAMESPACE::ColumnFamilyOptions
 
@@ -6091,14 +6166,31 @@ void Java_org_rocksdb_DBOptions_setSstFileManager(
 /*
  * Class:     org_rocksdb_DBOptions
  * Method:    setLogger
- * Signature: (JJ)V
+ * Signature: (JJB)V
  */
-void Java_org_rocksdb_DBOptions_setLogger(JNIEnv*, jobject, jlong jhandle,
-                                          jlong jlogger_handle) {
-  std::shared_ptr<ROCKSDB_NAMESPACE::LoggerJniCallback>* pLogger =
-      reinterpret_cast<std::shared_ptr<ROCKSDB_NAMESPACE::LoggerJniCallback>*>(
-          jlogger_handle);
-  reinterpret_cast<ROCKSDB_NAMESPACE::DBOptions*>(jhandle)->info_log = *pLogger;
+void Java_org_rocksdb_DBOptions_setLogger(JNIEnv* env, jobject, jlong jhandle,
+                                          jlong jlogger_handle,
+                                          jbyte jlogger_type) {
+  auto* options = reinterpret_cast<ROCKSDB_NAMESPACE::DBOptions*>(jhandle);
+  switch (jlogger_type) {
+    case 0x1:
+      // JAVA_IMPLEMENTATION
+      options->info_log =
+          *(reinterpret_cast<
+              std::shared_ptr<ROCKSDB_NAMESPACE::LoggerJniCallback>*>(
+              jlogger_handle));
+      break;
+    case 0x2:
+      // STDERR_IMPLEMENTATION
+      options->info_log =
+          *(reinterpret_cast<std::shared_ptr<ROCKSDB_NAMESPACE::StderrLogger>*>(
+              jlogger_handle));
+      break;
+    default:
+      ROCKSDB_NAMESPACE::IllegalArgumentExceptionJni::ThrowNew(
+          env, ROCKSDB_NAMESPACE::Status::InvalidArgument(
+                   ROCKSDB_NAMESPACE::Slice("Unknown value for LoggerType")));
+  }
 }
 
 /*
@@ -8563,6 +8655,27 @@ void Java_org_rocksdb_ReadOptions_setValueSizeSoftLimit(
     JNIEnv*, jobject, jlong jhandle, jlong jvalue_size_soft_limit) {
   auto* opt = reinterpret_cast<ROCKSDB_NAMESPACE::ReadOptions*>(jhandle);
   opt->value_size_soft_limit = static_cast<uint64_t>(jvalue_size_soft_limit);
+}
+
+/*
+ * Class:     org_rocksdb_ReadOptions
+ * Method:    asyncIo
+ * Signature: (J)Z
+ */
+jboolean Java_org_rocksdb_ReadOptions_asyncIo(JNIEnv*, jobject, jlong jhandle) {
+  auto* opt = reinterpret_cast<ROCKSDB_NAMESPACE::ReadOptions*>(jhandle);
+  return static_cast<jboolean>(opt->async_io);
+}
+
+/*
+ * Class:     org_rocksdb_ReadOptions
+ * Method:    setAsyncIo
+ * Signature: (JZ)V
+ */
+void Java_org_rocksdb_ReadOptions_setAsyncIo(JNIEnv*, jobject, jlong jhandle,
+                                             jboolean jasync_io) {
+  auto* opt = reinterpret_cast<ROCKSDB_NAMESPACE::ReadOptions*>(jhandle);
+  opt->async_io = static_cast<bool>(jasync_io);
 }
 
 /////////////////////////////////////////////////////////////////////

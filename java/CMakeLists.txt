@@ -74,9 +74,11 @@ set(JNI_NATIVE_SOURCES
         rocksjni/sst_partitioner.cc
         rocksjni/statistics.cc
         rocksjni/statisticsjni.cc
+        rocksjni/stderr_logger.cc
         rocksjni/table.cc
         rocksjni/table_filter.cc
         rocksjni/table_filter_jnicallback.cc
+        rocksjni/table_properties_collector_factory.cc
         rocksjni/testable_event_listener.cc
         rocksjni/thread_status.cc
         rocksjni/trace_writer.cc
@@ -187,6 +189,8 @@ set(JAVA_MAIN_CLASSES
   src/main/java/org/rocksdb/LiveFileMetaData.java
   src/main/java/org/rocksdb/LogFile.java
   src/main/java/org/rocksdb/Logger.java
+  src/main/java/org/rocksdb/LoggerInterface.java
+  src/main/java/org/rocksdb/LoggerType.java
   src/main/java/org/rocksdb/LRUCache.java
   src/main/java/org/rocksdb/MemoryUsageType.java
   src/main/java/org/rocksdb/MemoryUtil.java
@@ -257,6 +261,7 @@ set(JAVA_MAIN_CLASSES
   src/main/java/org/rocksdb/TableFileDeletionInfo.java
   src/main/java/org/rocksdb/TableFilter.java
   src/main/java/org/rocksdb/TableProperties.java
+  src/main/java/org/rocksdb/TablePropertiesCollectorFactory.java
   src/main/java/org/rocksdb/TableFormatConfig.java
   src/main/java/org/rocksdb/ThreadType.java
   src/main/java/org/rocksdb/ThreadStatus.java
@@ -300,6 +305,7 @@ set(JAVA_MAIN_CLASSES
   src/test/java/org/rocksdb/WriteBatchTest.java
   src/test/java/org/rocksdb/RocksNativeLibraryResource.java
   src/test/java/org/rocksdb/util/CapturingWriteBatchHandler.java
+  src/main/java/org/rocksdb/util/StdErrLogger.java
   src/test/java/org/rocksdb/util/WriteBatchGetter.java
 )
 
@@ -411,6 +417,7 @@ set(JAVA_TEST_CLASSES
   src/test/java/org/rocksdb/MemoryUtilTest.java
   src/test/java/org/rocksdb/TableFilterTest.java
   src/test/java/org/rocksdb/TtlDBTest.java
+  src/test/java/org/rocksdb/util/StdErrLoggerTest.java
 )
 
 set(JAVA_TEST_RUNNING_CLASSES
@@ -509,6 +516,7 @@ set(JAVA_TEST_RUNNING_CLASSES
   org.rocksdb.MemoryUtilTest
   org.rocksdb.TableFilterTest
   org.rocksdb.TtlDBTest
+  org.rocksdb.util.StdErrLoggerTest
 )
 
 include(FindJava)
@@ -786,6 +794,32 @@ if(NOT MINGW)
     COMPILE_PDB_NAME ${ROCKSDBJNI_STATIC_LIB}.pdb
   )
 endif()
+
+# Javadoc Jar
+set(ROCKSDB_JAVADOC_JAR rocksdbjni-${CMAKE_PROJECT_VERSION}-javadoc.jar)
+create_javadoc(rocksdb
+        PACKAGES org.rocksdb org.rocksdb.util
+        SOURCEPATH "${PROJECT_SOURCE_DIR}/java/src/main/java"
+        WINDOWTITLE "RocksDB Java API JavaDoc"
+        AUTHOR FALSE
+        USE FALSE
+        VERSION TRUE
+)
+add_custom_target(rocksdb_javadocs_jar ALL
+  COMMAND ${Java_JAR_EXECUTABLE} cvf ${CMAKE_CURRENT_BINARY_DIR}/${ROCKSDB_JAVADOC_JAR} -C ${CMAKE_CURRENT_BINARY_DIR}/javadoc/rocksdb .
+  BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/${ROCKSDB_JAVADOC_JAR}
+  WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+# Sources Jar
+set(ROCKSDB_SOURCES_JAR rocksdbjni-${CMAKE_PROJECT_VERSION}-sources.jar)
+add_custom_target(rocksdb_sources_jar ALL
+        ${Java_JAR_EXECUTABLE} cvf ${CMAKE_CURRENT_BINARY_DIR}/${ROCKSDB_SOURCES_JAR} -C ${PROJECT_SOURCE_DIR}/java/src/main/java/ .
+        BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/${ROCKSDB_SOURCES_JAR}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+)
+
+
 
 enable_testing()
 get_target_property(ROCKSDBJNI_CLASSES_TEST_JAR_FILE rocksdbjni_test_classes JAR_FILE)

@@ -248,9 +248,9 @@ class BlobDB : public StackableDB {
 
   virtual BlobDBOptions GetBlobDBOptions() const = 0;
 
-  virtual Status SyncBlobFiles() = 0;
+  virtual Status SyncBlobFiles(const WriteOptions& write_options) = 0;
 
-  virtual ~BlobDB() {}
+  ~BlobDB() override {}
 
  protected:
   explicit BlobDB();
