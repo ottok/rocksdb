@@ -483,12 +483,13 @@ void StressTest::PreloadDbAndReopenAsReadOnly(int64_t number_of_keys,
     for (int64_t k = 0; k != number_of_keys; ++k) {
       const std::string key = Key(k);
 
-      constexpr uint32_t value_base = 0;
+      PendingExpectedValue pending_expected_value =
+          shared->PreparePut(cf_idx, k);
+      const uint32_t value_base = pending_expected_value.GetFinalValueBase();
       const size_t sz = GenerateValue(value_base, value, sizeof(value));
 
       const Slice v(value, sz);
 
-      shared->Put(cf_idx, k, value_base, true /* pending */);
 
       std::string ts;
       if (FLAGS_user_timestamp_size > 0) {
@@ -534,7 +535,7 @@ void StressTest::PreloadDbAndReopenAsReadOnly(int64_t number_of_keys,
         }
       }
 
-      shared->Put(cf_idx, k, value_base, false /* pending */);
+      pending_expected_value.Commit();
       if (!s.ok()) {
         break;
       }
@@ -614,8 +615,7 @@ void StressTest::ProcessRecoveredPreparedTxnsHelper(Transaction* txn,
     for (wbwi_iter->SeekToFirst(); wbwi_iter->Valid(); wbwi_iter->Next()) {
       uint64_t key_val;
       if (GetIntVal(wbwi_iter->Entry().key.ToString(), &key_val)) {
-        shared->Put(static_cast<int>(i) /* cf_idx */, key_val,
-                    0 /* value_base */, true /* pending */);
+        shared->SyncPendingPut(static_cast<int>(i) /* cf_idx */, key_val);
       }
     }
   }
@@ -985,7 +985,22 @@ void StressTest::OperateDb(ThreadState* thread) {
       if (prob_op >= 0 && prob_op < static_cast<int>(FLAGS_readpercent)) {
         assert(0 <= prob_op);
         // OPERATION read
-        if (FLAGS_use_get_entity) {
+        if (FLAGS_use_multi_get_entity) {
+          constexpr uint64_t max_batch_size = 64;
+          const uint64_t batch_size = std::min(
+              static_cast<uint64_t>(thread->rand.Uniform(max_batch_size)) + 1,
+              ops_per_open - i);
+          assert(batch_size >= 1);
+          assert(batch_size <= max_batch_size);
+          assert(i + batch_size <= ops_per_open);
+
+          rand_keys = GenerateNKeys(thread, static_cast<int>(batch_size), i);
+
+          TestMultiGetEntity(thread, read_opts, rand_column_families,
+                             rand_keys);
+
+          i += batch_size - 1;
+        } else if (FLAGS_use_get_entity) {
           TestGetEntity(thread, read_opts, rand_column_families, rand_keys);
         } else if (FLAGS_use_multiget) {
           // Leave room for one more iteration of the loop with a single key
@@ -1820,18 +1835,10 @@ Status StressTest::TestCheckpoint(ThreadState* thread,
   Options tmp_opts(options_);
   tmp_opts.listeners.clear();
   tmp_opts.env = db_stress_env;
+  // Avoid delayed deletion so whole directory can be deleted
+  tmp_opts.sst_file_manager.reset();
 
   DestroyDB(checkpoint_dir, tmp_opts);
-
-  if (db_stress_env->FileExists(checkpoint_dir).ok()) {
-    // If the directory might still exist, try to delete the files one by one.
-    // Likely a trash file is still there.
-    Status my_s = DestroyDir(db_stress_env, checkpoint_dir);
-    if (!my_s.ok()) {
-      fprintf(stderr, "Fail to destory directory before checkpoint: %s",
-              my_s.ToString().c_str());
-    }
-  }
 
   Checkpoint* checkpoint = nullptr;
   Status s = Checkpoint::Create(db_, &checkpoint);
@@ -2387,6 +2394,8 @@ void StressTest::PrintEnv() const {
           FLAGS_use_multiget ? "true" : "false");
   fprintf(stdout, "Use GetEntity             : %s\n",
           FLAGS_use_get_entity ? "true" : "false");
+  fprintf(stdout, "Use MultiGetEntity        : %s\n",
+          FLAGS_use_multi_get_entity ? "true" : "false");
 
   const char* memtablerep = "";
   switch (FLAGS_rep_factory) {
@@ -2662,7 +2671,7 @@ void StressTest::Open(SharedState* shared) {
             // wait for all compactions to finish to make sure DB is in
             // clean state before executing queries.
             s = static_cast_with_check<DBImpl>(db_->GetRootDB())
-                    ->WaitForCompact(true /* wait_unscheduled */);
+                    ->WaitForCompact();
             if (!s.ok()) {
               for (auto cf : column_families_) {
                 delete cf;
@@ -3113,6 +3122,7 @@ void InitializeOptionsFromFlags(
       FLAGS_verify_sst_unique_id_in_manifest;
   options.memtable_protection_bytes_per_key =
       FLAGS_memtable_protection_bytes_per_key;
+  options.block_protection_bytes_per_key = FLAGS_block_protection_bytes_per_key;
 
   // Integrated BlobDB
   options.enable_blob_files = FLAGS_enable_blob_files;
@@ -3198,6 +3208,8 @@ void InitializeOptionsFromFlags(
   }
 
   options.allow_data_in_errors = FLAGS_allow_data_in_errors;
+
+  options.enable_thread_tracking = FLAGS_enable_thread_tracking;
 }
 
 void InitializeOptionsGeneral(
