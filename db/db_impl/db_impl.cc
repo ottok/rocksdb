@@ -312,8 +312,36 @@ Status DBImpl::ResumeImpl() {
   }
 
   // Make sure the IO Status stored in version set is set to OK.
+  bool file_deletion_disabled = !IsFileDeletionsEnabled();
   if (s.ok()) {
-    versions_->SetIOStatusOK();
+    IOStatus io_s = versions_->io_status();
+    if (io_s.IsIOError()) {
+      // If resuming from IOError resulted from MANIFEST write, then assert
+      // that we must have already set the MANIFEST writer to nullptr during
+      // clean-up phase MANIFEST writing. We must have also disabled file
+      // deletions.
+      assert(!versions_->descriptor_log_);
+      assert(file_deletion_disabled);
+      // Since we are trying to recover from MANIFEST write error, we need to
+      // switch to a new MANIFEST anyway. The old MANIFEST can be corrupted.
+      // Therefore, force writing a dummy version edit because we do not know
+      // whether there are flush jobs with non-empty data to flush, triggering
+      // appends to MANIFEST.
+      VersionEdit edit;
+      auto cfh = reinterpret_cast<ColumnFamilyHandleImpl*>(default_cf_handle_);
+      assert(cfh);
+      ColumnFamilyData* cfd = cfh->cfd();
+      const MutableCFOptions& cf_opts = *cfd->GetLatestMutableCFOptions();
+      s = versions_->LogAndApply(cfd, cf_opts, &edit, &mutex_,
+                                 directories_.GetDbDir());
+      if (!s.ok()) {
+        io_s = versions_->io_status();
+        if (!io_s.ok()) {
+          s = error_handler_.SetBGError(io_s,
+                                        BackgroundErrorReason::kManifestWrite);
+        }
+      }
+    }
   }
 
   // We cannot guarantee consistency of the WAL. So force flush Memtables of
@@ -364,6 +392,13 @@ Status DBImpl::ResumeImpl() {
   job_context.Clean();
 
   if (s.ok()) {
+    assert(versions_->io_status().ok());
+    // If we reach here, we should re-enable file deletions if it was disabled
+    // during previous error handling.
+    if (file_deletion_disabled) {
+      // Always return ok
+      EnableFileDeletions(/*force=*/true);
+    }
     ROCKS_LOG_INFO(immutable_db_options_.info_log, "Successfully resumed DB");
   }
   mutex_.Lock();
@@ -1787,6 +1822,7 @@ std::vector<Status> DBImpl::MultiGet(
   // merge_operands will contain the sequence of merges in the latter case.
   size_t num_found = 0;
   size_t keys_read;
+  uint64_t curr_value_size = 0;
   for (keys_read = 0; keys_read < num_keys; ++keys_read) {
     merge_context.Clear();
     Status& s = stat_list[keys_read];
@@ -1830,6 +1866,13 @@ std::vector<Status> DBImpl::MultiGet(
     if (s.ok()) {
       bytes_read += value->size();
       num_found++;
+      curr_value_size += value->size();
+      if (curr_value_size > read_options.value_size_soft_limit) {
+        while (++keys_read < num_keys) {
+          stat_list[keys_read] = Status::Aborted();
+        }
+        break;
+      }
     }
 
     if (read_options.deadline.count() &&
@@ -2084,11 +2127,11 @@ void DBImpl::MultiGet(const ReadOptions& read_options, const size_t num_keys,
     }
   }
   if (!s.ok()) {
-    assert(s.IsTimedOut());
+    assert(s.IsTimedOut() || s.IsAborted());
     for (++cf_iter; cf_iter != multiget_cf_data.end(); ++cf_iter) {
       for (size_t i = cf_iter->start; i < cf_iter->start + cf_iter->num_keys;
            ++i) {
-        *sorted_keys[i]->s = Status::TimedOut();
+        *sorted_keys[i]->s = s;
       }
     }
   }
@@ -2243,7 +2286,7 @@ void DBImpl::MultiGetWithCallback(
   Status s = MultiGetImpl(read_options, 0, num_keys, sorted_keys,
                           multiget_cf_data[0].super_version, consistent_seqnum,
                           nullptr, nullptr);
-  assert(s.ok() || s.IsTimedOut());
+  assert(s.ok() || s.IsTimedOut() || s.IsAborted());
   ReturnAndCleanupSuperVersion(multiget_cf_data[0].cfd,
                                multiget_cf_data[0].super_version);
 }
@@ -2271,6 +2314,7 @@ Status DBImpl::MultiGetImpl(
   // merge_operands will contain the sequence of merges in the latter case.
   size_t keys_left = num_keys;
   Status s;
+  uint64_t curr_value_size = 0;
   while (keys_left) {
     if (read_options.deadline.count() &&
         env_->NowMicros() >
@@ -2285,6 +2329,7 @@ Status DBImpl::MultiGetImpl(
     MultiGetContext ctx(sorted_keys, start_key + num_keys - keys_left,
                         batch_size, snapshot, read_options);
     MultiGetRange range = ctx.GetMultiGetRange();
+    range.AddValueSize(curr_value_size);
     bool lookup_current = false;
 
     keys_left -= batch_size;
@@ -2315,6 +2360,11 @@ Status DBImpl::MultiGetImpl(
       super_version->current->MultiGet(read_options, &range, callback,
                                        is_blob_index);
     }
+    curr_value_size = range.GetValueSize();
+    if (curr_value_size > read_options.value_size_soft_limit) {
+      s = Status::Aborted();
+      break;
+    }
   }
 
   // Post processing (decrement reference counts and record statistics)
@@ -2329,11 +2379,11 @@ Status DBImpl::MultiGetImpl(
     }
   }
   if (keys_left) {
-    assert(s.IsTimedOut());
+    assert(s.IsTimedOut() || s.IsAborted());
     for (size_t i = start_key + num_keys - keys_left; i < start_key + num_keys;
          ++i) {
       KeyContext* key = (*sorted_keys)[i];
-      *key->s = Status::TimedOut();
+      *key->s = s;
     }
   }
 
@@ -2655,7 +2705,8 @@ Iterator* DBImpl::NewIterator(const ReadOptions& read_options,
         " guaranteed to be preserved, try larger iter_start_seqnum opt."));
   }
   auto cfh = reinterpret_cast<ColumnFamilyHandleImpl*>(column_family);
-  auto cfd = cfh->cfd();
+  ColumnFamilyData* cfd = cfh->cfd();
+  assert(cfd != nullptr);
   ReadCallback* read_callback = nullptr;  // No read callback provided.
   if (read_options.tailing) {
 #ifdef ROCKSDB_LITE
@@ -2676,10 +2727,11 @@ Iterator* DBImpl::NewIterator(const ReadOptions& read_options,
     // Note: no need to consider the special case of
     // last_seq_same_as_publish_seq_==false since NewIterator is overridden in
     // WritePreparedTxnDB
-    auto snapshot = read_options.snapshot != nullptr
-                        ? read_options.snapshot->GetSequenceNumber()
-                        : versions_->LastSequence();
-    result = NewIteratorImpl(read_options, cfd, snapshot, read_callback);
+    result = NewIteratorImpl(read_options, cfd,
+                             (read_options.snapshot != nullptr)
+                                 ? read_options.snapshot->GetSequenceNumber()
+                                 : kMaxSequenceNumber,
+                             read_callback);
   }
   return result;
 }
@@ -2691,6 +2743,24 @@ ArenaWrappedDBIter* DBImpl::NewIteratorImpl(const ReadOptions& read_options,
                                             bool allow_blob,
                                             bool allow_refresh) {
   SuperVersion* sv = cfd->GetReferencedSuperVersion(this);
+
+  TEST_SYNC_POINT("DBImpl::NewIterator:1");
+  TEST_SYNC_POINT("DBImpl::NewIterator:2");
+
+  if (snapshot == kMaxSequenceNumber) {
+    // Note that the snapshot is assigned AFTER referencing the super
+    // version because otherwise a flush happening in between may compact away
+    // data for the snapshot, so the reader would see neither data that was be
+    // visible to the snapshot before compaction nor the newer data inserted
+    // afterwards.
+    // Note that the super version might not contain all the data available
+    // to this snapshot, but in that case it can see all the data in the
+    // super version, which is a valid consistent state after the user
+    // calls NewIterator().
+    snapshot = versions_->LastSequence();
+    TEST_SYNC_POINT("DBImpl::NewIterator:3");
+    TEST_SYNC_POINT("DBImpl::NewIterator:4");
+  }
 
   // Try to generate a DB iterator tree in continuous memory area to be
   // cache friendly. Here is an example of result:
@@ -4165,7 +4235,8 @@ Status DBImpl::IngestExternalFiles(
         static_cast<ColumnFamilyHandleImpl*>(args[i].column_family)->cfd();
     SuperVersion* super_version = cfd->GetReferencedSuperVersion(this);
     exec_results[i].second = ingestion_jobs[i].Prepare(
-        args[i].external_files, start_file_number, super_version);
+        args[i].external_files, args[i].files_checksums,
+        args[i].files_checksum_func_names, start_file_number, super_version);
     exec_results[i].first = true;
     CleanupSuperVersion(super_version);
   }
@@ -4176,7 +4247,8 @@ Status DBImpl::IngestExternalFiles(
         static_cast<ColumnFamilyHandleImpl*>(args[0].column_family)->cfd();
     SuperVersion* super_version = cfd->GetReferencedSuperVersion(this);
     exec_results[0].second = ingestion_jobs[0].Prepare(
-        args[0].external_files, next_file_number, super_version);
+        args[0].external_files, args[0].files_checksums,
+        args[0].files_checksum_func_names, next_file_number, super_version);
     exec_results[0].first = true;
     CleanupSuperVersion(super_version);
   }
@@ -4352,6 +4424,14 @@ Status DBImpl::IngestExternalFiles(
 #endif  // !NDEBUG
         }
       }
+    } else if (versions_->io_status().IsIOError()) {
+      // Error while writing to MANIFEST.
+      // In fact, versions_->io_status() can also be the result of renaming
+      // CURRENT file. With current code, it's just difficult to tell. So just
+      // be pessimistic and try write to a new MANIFEST.
+      // TODO: distinguish between MANIFEST write and CURRENT renaming
+      const IOStatus& io_s = versions_->io_status();
+      error_handler_.SetBGError(io_s, BackgroundErrorReason::kManifestWrite);
     }
 
     // Resume writes to the DB

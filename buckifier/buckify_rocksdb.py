@@ -20,10 +20,10 @@ from util import ColorString
 # User can pass extra dependencies as a JSON object via command line, and this
 # script can include these dependencies in the generate TARGETS file.
 # Usage:
-# $python buckifier/buckify_rocksdb.py
+# $python3 buckifier/buckify_rocksdb.py
 # (This generates a TARGET file without user-specified dependency for unit
 # tests.)
-# $python buckifier/buckify_rocksdb.py \
+# $python3 buckifier/buckify_rocksdb.py \
 #        '{"fake": { \
 #                      "extra_deps": [":test_dep", "//fakes/module:mock1"],  \
 #                      "extra_compiler_flags": ["-DROCKSDB_LITE", "-Os"], \
@@ -63,8 +63,6 @@ def get_cc_files(repo_path):
             # Skip java
             continue
         for filename in fnmatch.filter(filenames, '*.cc'):
-            cc_files.append(os.path.join(root, filename))
-        for filename in fnmatch.filter(filenames, '*.c'):
             cc_files.append(os.path.join(root, filename))
     return cc_files
 
@@ -108,7 +106,6 @@ def get_tests(repo_path):
 
     return tests
 
-
 # Parse extra dependencies passed by user from command line
 def get_dependencies():
     deps_map = {
@@ -147,6 +144,7 @@ def generate_targets(repo_path, deps_map):
         return False
 
     TARGETS = TARGETSBuilder("%s/TARGETS" % repo_path)
+
     # rocksdb_lib
     TARGETS.add_library(
         "rocksdb_lib",
@@ -159,7 +157,10 @@ def generate_targets(repo_path, deps_map):
         src_mk.get("TEST_LIB_SOURCES", []) +
         src_mk.get("EXP_LIB_SOURCES", []) +
         src_mk.get("ANALYZER_LIB_SOURCES", []),
-        [":rocksdb_lib"])
+        [":rocksdb_lib"],
+        extra_external_deps=""" + [
+        ("googletest", None, "gtest"),
+    ]""")
     # rocksdb_tools_lib
     TARGETS.add_library(
         "rocksdb_tools_lib",
@@ -175,10 +176,18 @@ def generate_targets(repo_path, deps_map):
         + ["test_util/testutil.cc"])
 
     print("Extra dependencies:\n{0}".format(json.dumps(deps_map)))
-    # test for every test we found in the Makefile
+
+    # c_test.c is added through TARGETS.add_c_test(). If there
+    # are more than one .c test file, we need to extend
+    # TARGETS.add_c_test() to include other C tests too.
+    TARGETS.add_c_test()
+
+    # test for every .cc test we found in the Makefile
     for target_alias, deps in deps_map.items():
         for test in sorted(tests):
-            match_src = [src for src in cc_files if ("/%s.c" % test) in src]
+            if test == 'c_test':
+                continue
+            match_src = [src for src in cc_files if ("/%s.cc" % test) in src]
             if len(match_src) == 0:
                 print(ColorString.warning("Cannot find .cc file for %s" % test))
                 continue
@@ -218,6 +227,7 @@ def get_rocksdb_path():
         os.path.join(script_dir, "../"))
 
     return rocksdb_path
+
 
 def exit_with_error(msg):
     print(ColorString.error(msg))

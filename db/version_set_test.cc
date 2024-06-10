@@ -372,19 +372,19 @@ TEST_F(VersionStorageInfoTest, EstimateLiveDataSize) {
   Add(2, 3U, "6", "8", 1U);  // Partial overlap with last level
   Add(3, 4U, "1", "9", 1U);  // Contains range of last level
   Add(4, 5U, "4", "5", 1U);  // Inside range of last level
-  Add(4, 5U, "6", "7", 1U);  // Inside range of last level
-  Add(5, 6U, "4", "7", 10U);
+  Add(4, 6U, "6", "7", 1U);  // Inside range of last level
+  Add(5, 7U, "4", "7", 10U);
   ASSERT_EQ(10U, vstorage_.EstimateLiveDataSize());
 }
 
 TEST_F(VersionStorageInfoTest, EstimateLiveDataSize2) {
   Add(0, 1U, "9", "9", 1U);  // Level 0 is not ordered
-  Add(0, 1U, "5", "6", 1U);  // Ignored because of [5,6] in l1
-  Add(1, 1U, "1", "2", 1U);  // Ignored because of [2,3] in l2
-  Add(1, 2U, "3", "4", 1U);  // Ignored because of [2,3] in l2
-  Add(1, 3U, "5", "6", 1U);
-  Add(2, 4U, "2", "3", 1U);
-  Add(3, 5U, "7", "8", 1U);
+  Add(0, 2U, "5", "6", 1U);  // Ignored because of [5,6] in l1
+  Add(1, 3U, "1", "2", 1U);  // Ignored because of [2,3] in l2
+  Add(1, 4U, "3", "4", 1U);  // Ignored because of [2,3] in l2
+  Add(1, 5U, "5", "6", 1U);
+  Add(2, 6U, "2", "3", 1U);
+  Add(3, 7U, "7", "8", 1U);
   ASSERT_EQ(4U, vstorage_.EstimateLiveDataSize());
 }
 
@@ -419,6 +419,28 @@ TEST_F(VersionStorageInfoTest, GetOverlappingInputs) {
       1, {"g", 0, kTypeValue}, {"h", 0, kTypeValue}));
   ASSERT_EQ("6", GetOverlappingFiles(
       1, {"i", 0, kTypeValue}, {"j", 0, kTypeValue}));
+}
+
+TEST_F(VersionStorageInfoTest, FileLocationAndMetaDataByNumber) {
+  Add(0, 11U, "1", "2", 5000U);
+  Add(0, 12U, "1", "2", 5000U);
+
+  Add(2, 7U, "1", "2", 8000U);
+
+  ASSERT_EQ(vstorage_.GetFileLocation(11U),
+            VersionStorageInfo::FileLocation(0, 0));
+  ASSERT_NE(vstorage_.GetFileMetaDataByNumber(11U), nullptr);
+
+  ASSERT_EQ(vstorage_.GetFileLocation(12U),
+            VersionStorageInfo::FileLocation(0, 1));
+  ASSERT_NE(vstorage_.GetFileMetaDataByNumber(12U), nullptr);
+
+  ASSERT_EQ(vstorage_.GetFileLocation(7U),
+            VersionStorageInfo::FileLocation(2, 0));
+  ASSERT_NE(vstorage_.GetFileMetaDataByNumber(7U), nullptr);
+
+  ASSERT_FALSE(vstorage_.GetFileLocation(999U).IsValid());
+  ASSERT_EQ(vstorage_.GetFileMetaDataByNumber(999U), nullptr);
 }
 
 class VersionStorageInfoTimestampTest : public VersionStorageInfoTestBase {
@@ -958,6 +980,84 @@ TEST_F(VersionSetTest, PersistBlobFileStateInNewManifest) {
 
   SyncPoint::GetInstance()->DisableProcessing();
   SyncPoint::GetInstance()->ClearAllCallBacks();
+}
+
+TEST_F(VersionSetTest, AddLiveBlobFiles) {
+  // Initialize the database and add a blob file.
+  NewDB();
+
+  assert(versions_);
+  assert(versions_->GetColumnFamilySet());
+
+  ColumnFamilyData* const cfd = versions_->GetColumnFamilySet()->GetDefault();
+  assert(cfd);
+
+  VersionEdit first;
+
+  constexpr uint64_t first_blob_file_number = 234;
+  constexpr uint64_t first_total_blob_count = 555;
+  constexpr uint64_t first_total_blob_bytes = 66666;
+  constexpr char first_checksum_method[] = "CRC32";
+  constexpr char first_checksum_value[] = "3d87ff57";
+
+  first.AddBlobFile(first_blob_file_number, first_total_blob_count,
+                    first_total_blob_bytes, first_checksum_method,
+                    first_checksum_value);
+
+  mutex_.Lock();
+  Status s = versions_->LogAndApply(cfd, mutable_cf_options_, &first, &mutex_);
+  mutex_.Unlock();
+
+  ASSERT_OK(s);
+
+  // Reference the version so it stays alive even after the following version
+  // edit.
+  Version* const version = cfd->current();
+  assert(version);
+
+  version->Ref();
+
+  // Get live files directly from version.
+  std::vector<uint64_t> version_table_files;
+  std::vector<uint64_t> version_blob_files;
+
+  version->AddLiveFiles(&version_table_files, &version_blob_files);
+
+  ASSERT_EQ(version_blob_files.size(), 1);
+  ASSERT_EQ(version_blob_files[0], first_blob_file_number);
+
+  // Add another blob file.
+  VersionEdit second;
+
+  constexpr uint64_t second_blob_file_number = 456;
+  constexpr uint64_t second_total_blob_count = 100;
+  constexpr uint64_t second_total_blob_bytes = 2000000;
+  constexpr char second_checksum_method[] = "CRC32B";
+  constexpr char second_checksum_value[] = "6dbdf23a";
+  second.AddBlobFile(second_blob_file_number, second_total_blob_count,
+                     second_total_blob_bytes, second_checksum_method,
+                     second_checksum_value);
+
+  mutex_.Lock();
+  s = versions_->LogAndApply(cfd, mutable_cf_options_, &second, &mutex_);
+  mutex_.Unlock();
+
+  ASSERT_OK(s);
+
+  // Get all live files from version set. Note that the result contains
+  // duplicates.
+  std::vector<uint64_t> all_table_files;
+  std::vector<uint64_t> all_blob_files;
+
+  versions_->AddLiveFiles(&all_table_files, &all_blob_files);
+
+  ASSERT_EQ(all_blob_files.size(), 3);
+  ASSERT_EQ(all_blob_files[0], first_blob_file_number);
+  ASSERT_EQ(all_blob_files[1], first_blob_file_number);
+  ASSERT_EQ(all_blob_files[2], second_blob_file_number);
+
+  // Clean up previous version.
+  version->Unref();
 }
 
 TEST_F(VersionSetTest, ObsoleteBlobFile) {
