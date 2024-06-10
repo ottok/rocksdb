@@ -18,8 +18,7 @@
 #include "util/coding.h"
 #include "util/crc32c.h"
 
-namespace ROCKSDB_NAMESPACE {
-namespace log {
+namespace ROCKSDB_NAMESPACE::log {
 
 Reader::Reporter::~Reporter() = default;
 
@@ -44,7 +43,7 @@ Reader::Reader(std::shared_ptr<Logger> info_log,
       compression_type_record_read_(false),
       uncompress_(nullptr),
       hash_state_(nullptr),
-      uncompress_hash_state_(nullptr){};
+      uncompress_hash_state_(nullptr){}
 
 Reader::~Reader() {
   delete[] backing_store_;
@@ -259,6 +258,10 @@ bool Reader::ReadRecord(Slice* record, std::string* scratch,
             //  writing a physical record but before completing the next; don't
             //  treat it as a corruption, just ignore the entire logical record.
             scratch->clear();
+          } else {
+            if (wal_recovery_mode == WALRecoveryMode::kPointInTimeRecovery) {
+              ReportOldLogRecord(scratch->size());
+            }
           }
           return false;
         }
@@ -403,6 +406,12 @@ void Reader::ReportCorruption(size_t bytes, const char* reason) {
 void Reader::ReportDrop(size_t bytes, const Status& reason) {
   if (reporter_ != nullptr) {
     reporter_->Corruption(bytes, reason);
+  }
+}
+
+void Reader::ReportOldLogRecord(size_t bytes) {
+  if (reporter_ != nullptr) {
+    reporter_->OldLogRecord(bytes);
   }
 }
 
@@ -937,5 +946,4 @@ bool FragmentBufferedReader::TryReadFragment(
   }
 }
 
-}  // namespace log
-}  // namespace ROCKSDB_NAMESPACE
+}  // namespace ROCKSDB_NAMESPACE::log
