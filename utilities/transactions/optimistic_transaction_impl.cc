@@ -54,7 +54,7 @@ Status OptimisticTransactionImpl::Commit() {
   }
 
   Status s = db_impl->WriteWithCallback(
-      write_options_, write_batch_->GetWriteBatch(), &callback);
+      write_options_, GetWriteBatch()->GetWriteBatch(), &callback);
 
   if (s.ok()) {
     Clear();
@@ -73,9 +73,11 @@ Status OptimisticTransactionImpl::TryLock(ColumnFamilyHandle* column_family,
   }
   uint32_t cfh_id = GetColumnFamilyID(column_family);
 
+  SetSnapshotIfNeeded();
+
   SequenceNumber seq;
   if (snapshot_) {
-    seq = snapshot_->snapshot()->GetSequenceNumber();
+    seq = snapshot_->GetSequenceNumber();
   } else {
     seq = db_->GetLatestSequenceNumber();
   }
@@ -93,15 +95,19 @@ Status OptimisticTransactionImpl::TryLock(ColumnFamilyHandle* column_family,
 // if we can not determine whether there would be any such conflicts.
 //
 // Should only be called on writer thread in order to avoid any race conditions
-// in detecting
-// write conflicts.
+// in detecting write conflicts.
 Status OptimisticTransactionImpl::CheckTransactionForConflicts(DB* db) {
   Status result;
 
   assert(dynamic_cast<DBImpl*>(db) != nullptr);
   auto db_impl = reinterpret_cast<DBImpl*>(db);
 
-  return TransactionUtil::CheckKeysForConflicts(db_impl, GetTrackedKeys());
+  // Since we are on the write thread and do not want to block other writers,
+  // we will do a cache-only conflict check.  This can result in TryAgain
+  // getting returned if there is not sufficient memtable history to check
+  // for conflicts.
+  return TransactionUtil::CheckKeysForConflicts(db_impl, GetTrackedKeys(),
+                                                true /* cache_only */);
 }
 
 }  // namespace rocksdb

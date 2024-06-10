@@ -27,12 +27,12 @@
 #include "rocksdb/env.h"
 #include "rocksdb/memtablerep.h"
 #include "rocksdb/transaction_log.h"
+#include "table/scoped_arena_iterator.h"
 #include "util/autovector.h"
 #include "util/event_logger.h"
 #include "util/instrumented_mutex.h"
 #include "util/stop_watch.h"
 #include "util/thread_local.h"
-#include "util/scoped_arena_iterator.h"
 #include "db/internal_stats.h"
 #include "db/write_controller.h"
 #include "db/flush_scheduler.h"
@@ -58,6 +58,7 @@ class FlushJob {
            const EnvOptions& env_options, VersionSet* versions,
            InstrumentedMutex* db_mutex, std::atomic<bool>* shutting_down,
            std::vector<SequenceNumber> existing_snapshots,
+           SequenceNumber earliest_write_conflict_snapshot,
            JobContext* job_context, LogBuffer* log_buffer,
            Directory* db_directory, Directory* output_file_directory,
            CompressionType output_compression, Statistics* stats,
@@ -66,6 +67,7 @@ class FlushJob {
   ~FlushJob();
 
   Status Run(FileMetaData* file_meta = nullptr);
+  TableProperties GetTableProperties() const { return table_properties_; }
 
  private:
   void ReportStartedFlush();
@@ -82,6 +84,7 @@ class FlushJob {
   InstrumentedMutex* db_mutex_;
   std::atomic<bool>* shutting_down_;
   std::vector<SequenceNumber> existing_snapshots_;
+  SequenceNumber earliest_write_conflict_snapshot_;
   JobContext* job_context_;
   LogBuffer* log_buffer_;
   Directory* db_directory_;
@@ -89,6 +92,7 @@ class FlushJob {
   CompressionType output_compression_;
   Statistics* stats_;
   EventLogger* event_logger_;
+  TableProperties table_properties_;
 };
 
 }  // namespace rocksdb

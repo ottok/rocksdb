@@ -1288,6 +1288,11 @@ void rocksdb_block_based_options_set_cache_index_and_filter_blocks(
   options->rep.cache_index_and_filter_blocks = v;
 }
 
+void rocksdb_block_based_options_set_skip_table_builder_flush(
+    rocksdb_block_based_table_options_t* options, unsigned char v) {
+  options->rep.skip_table_builder_flush = v;
+}
+
 void rocksdb_options_set_block_based_table_factory(
     rocksdb_options_t *opt,
     rocksdb_block_based_table_options_t* table_options) {
@@ -1687,6 +1692,11 @@ void rocksdb_options_set_keep_log_file_num(rocksdb_options_t* opt, size_t v) {
   opt->rep.keep_log_file_num = v;
 }
 
+void rocksdb_options_set_recycle_log_file_num(rocksdb_options_t* opt,
+                                              size_t v) {
+  opt->rep.recycle_log_file_num = v;
+}
+
 void rocksdb_options_set_soft_rate_limit(rocksdb_options_t* opt, double v) {
   opt->rep.soft_rate_limit = v;
 }
@@ -1754,6 +1764,11 @@ void rocksdb_options_set_memtable_prefix_bloom_bits(
 void rocksdb_options_set_memtable_prefix_bloom_probes(
     rocksdb_options_t* opt, uint32_t v) {
   opt->rep.memtable_prefix_bloom_probes = v;
+}
+
+void rocksdb_options_set_memtable_prefix_bloom_huge_page_tlb_size(
+    rocksdb_options_t* opt, size_t v) {
+  opt->rep.memtable_prefix_bloom_huge_page_tlb_size = v;
 }
 
 void rocksdb_options_set_hash_skip_list_rep(
@@ -1955,7 +1970,7 @@ void rocksdb_filterpolicy_destroy(rocksdb_filterpolicy_t* filter) {
   delete filter;
 }
 
-rocksdb_filterpolicy_t* rocksdb_filterpolicy_create_bloom(int bits_per_key) {
+rocksdb_filterpolicy_t* rocksdb_filterpolicy_create_bloom_format(int bits_per_key, bool original_format) {
   // Make a rocksdb_filterpolicy_t, but override all of its methods so
   // they delegate to a NewBloomFilterPolicy() instead of user
   // supplied C functions.
@@ -1973,11 +1988,19 @@ rocksdb_filterpolicy_t* rocksdb_filterpolicy_create_bloom(int bits_per_key) {
     static void DoNothing(void*) { }
   };
   Wrapper* wrapper = new Wrapper;
-  wrapper->rep_ = NewBloomFilterPolicy(bits_per_key);
+  wrapper->rep_ = NewBloomFilterPolicy(bits_per_key, original_format);
   wrapper->state_ = nullptr;
   wrapper->delete_filter_ = nullptr;
   wrapper->destructor_ = &Wrapper::DoNothing;
   return wrapper;
+}
+
+rocksdb_filterpolicy_t* rocksdb_filterpolicy_create_bloom_full(int bits_per_key) {
+  return rocksdb_filterpolicy_create_bloom_format(bits_per_key, false);
+}
+
+rocksdb_filterpolicy_t* rocksdb_filterpolicy_create_bloom(int bits_per_key) {
+  return rocksdb_filterpolicy_create_bloom_format(bits_per_key, true);
 }
 
 rocksdb_mergeoperator_t* rocksdb_mergeoperator_create(

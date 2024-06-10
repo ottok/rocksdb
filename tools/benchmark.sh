@@ -37,8 +37,7 @@ if [ ! -z $DB_BENCH_NO_SYNC ]; then
 fi
 
 num_threads=${NUM_THREADS:-16}
-# Only for *whilewriting, *whilemerging
-writes_per_second=${WRITES_PER_SECOND:-$((10 * K))}
+mb_written_per_sec=${MB_WRITE_PER_SEC:-0}
 # Only for tests that do range scans
 num_nexts_per_seek=${NUM_NEXTS_PER_SEEK:-10}
 cache_size=${CACHE_SIZE:-$((1 * G))}
@@ -67,6 +66,7 @@ const_params="
   --level_compaction_dynamic_level_bytes=true \
   --bytes_per_sync=$((8 * M)) \
   --cache_index_and_filter_blocks=0 \
+  --benchmark_write_rate_limit=$(( 1024 * 1024 * $mb_written_per_sec )) \
   \
   --hard_rate_limit=3 \
   --rate_limit_delay_max_milliseconds=1000000 \
@@ -109,6 +109,10 @@ function summarize_result {
   test_name=$2
   bench_name=$3
 
+  # Note that this function assumes that the benchmark executes long enough so
+  # that "Compaction Stats" is written to stdout at least once. If it won't
+  # happen then empty output from grep when searching for "Sum" will cause
+  # syntax errors.
   uptime=$( grep ^Uptime\(secs $test_out | tail -1 | awk '{ printf "%.0f", $2 }' )
   stall_time=$( grep "^Cumulative stall" $test_out | tail -1  | awk '{  print $3 }' )
   stall_pct=$( grep "^Cumulative stall" $test_out| tail -1  | awk '{  print $5 }' )
@@ -159,8 +163,22 @@ function run_bulkload {
 }
 
 function run_fillseq {
-  # This runs with a vector memtable and the WAL disabled to load faster. It is still crash safe and the
-  # client can discover where to restart a load after a crash. I think this is a good way to load.
+  # This runs with a vector memtable. WAL can be either disabled or enabled
+  # depending on the input parameter (1 for disabled, 0 for enabled). The main
+  # benefit behind disabling WAL is to make loading faster. It is still crash
+  # safe and the client can discover where to restart a load after a crash. I
+  # think this is a good way to load.
+
+  # Make sure that we'll have unique names for all the files so that data won't
+  # be overwritten.
+  if [ $1 == 1 ]; then
+    log_file_name=$output_dir/benchmark_fillseq.wal_disabled.v${value_size}.log
+    test_name=fillseq.wal_disabled.v${value_size}
+  else
+    log_file_name=$output_dir/benchmark_fillseq.wal_enabled.v${value_size}.log
+    test_name=fillseq.wal_enabled.v${value_size}
+  fi
+
   echo "Loading $num_keys keys sequentially"
   cmd="./db_bench --benchmarks=fillseq \
        --use_existing_db=0 \
@@ -169,12 +187,14 @@ function run_fillseq {
        --min_level_to_compress=0 \
        --threads=1 \
        --memtablerep=vector \
-       --disable_wal=1 \
+       --disable_wal=$1 \
        --seed=$( date +%s ) \
-       2>&1 | tee -a $output_dir/benchmark_fillseq.v${value_size}.log"
-  echo $cmd | tee $output_dir/benchmark_fillseq.v${value_size}.log
+       2>&1 | tee -a $log_file_name"
+  echo $cmd | tee $log_file_name
   eval $cmd
-  summarize_result $output_dir/benchmark_fillseq.v${value_size}.log fillseq.v${value_size} fillseq
+
+  # The constant "fillseq" which we pass to db_bench is the benchmark name.
+  summarize_result $log_file_name $test_name fillseq
 }
 
 function run_change {
@@ -231,7 +251,6 @@ function run_readwhile {
        --sync=$syncval \
        $params_w \
        --threads=$num_threads \
-       --writes_per_second=$writes_per_second \
        --merge_operator=\"put\" \
        --seed=$( date +%s ) \
        2>&1 | tee -a $output_dir/${out_name}"
@@ -251,7 +270,6 @@ function run_rangewhile {
        --sync=$syncval \
        $params_w \
        --threads=$num_threads \
-       --writes_per_second=$writes_per_second \
        --merge_operator=\"put\" \
        --seek_nexts=$num_nexts_per_seek \
        --reverse_iterator=$reverse_arg \
@@ -312,8 +330,10 @@ for job in ${jobs[@]}; do
   start=$(now)
   if [ $job = bulkload ]; then
     run_bulkload
-  elif [ $job = fillseq ]; then
-    run_fillseq
+  elif [ $job = fillseq_disable_wal ]; then
+    run_fillseq 1
+  elif [ $job = fillseq_enable_wal ]; then
+    run_fillseq 0
   elif [ $job = overwrite ]; then
     run_change overwrite
   elif [ $job = updaterandom ]; then

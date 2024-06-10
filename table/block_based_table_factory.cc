@@ -24,8 +24,8 @@
 namespace rocksdb {
 
 BlockBasedTableFactory::BlockBasedTableFactory(
-    const BlockBasedTableOptions& table_options)
-    : table_options_(table_options) {
+    const BlockBasedTableOptions& _table_options)
+    : table_options_(_table_options) {
   if (table_options_.flush_block_policy_factory == nullptr) {
     table_options_.flush_block_policy_factory.reset(
         new FlushBlockBySizePolicyFactory());
@@ -38,6 +38,12 @@ BlockBasedTableFactory::BlockBasedTableFactory(
   if (table_options_.block_size_deviation < 0 ||
       table_options_.block_size_deviation > 100) {
     table_options_.block_size_deviation = 0;
+  }
+  if (table_options_.block_restart_interval < 1) {
+    table_options_.block_restart_interval = 1;
+  }
+  if (table_options_.index_block_restart_interval < 1) {
+    table_options_.index_block_restart_interval = 1;
   }
 }
 
@@ -57,17 +63,18 @@ Status BlockBasedTableFactory::NewTableReader(
   return BlockBasedTable::Open(
       table_reader_options.ioptions, table_reader_options.env_options,
       table_options_, table_reader_options.internal_comparator, std::move(file),
-      file_size, table_reader, prefetch_enabled);
+      file_size, table_reader, prefetch_enabled,
+      table_reader_options.skip_filters);
 }
 
 TableBuilder* BlockBasedTableFactory::NewTableBuilder(
-    const TableBuilderOptions& table_builder_options,
+    const TableBuilderOptions& table_builder_options, uint32_t column_family_id,
     WritableFileWriter* file) const {
   auto table_builder = new BlockBasedTableBuilder(
       table_builder_options.ioptions, table_options_,
       table_builder_options.internal_comparator,
-      table_builder_options.int_tbl_prop_collector_factories, file,
-      table_builder_options.compression_type,
+      table_builder_options.int_tbl_prop_collector_factories, column_family_id,
+      file, table_builder_options.compression_type,
       table_builder_options.compression_opts,
       table_builder_options.skip_filters);
 
@@ -146,25 +153,32 @@ std::string BlockBasedTableFactory::GetPrintableTableOptions() const {
   snprintf(buffer, kBufferSize, "  block_restart_interval: %d\n",
            table_options_.block_restart_interval);
   ret.append(buffer);
+  snprintf(buffer, kBufferSize, "  index_block_restart_interval: %d\n",
+           table_options_.index_block_restart_interval);
+  ret.append(buffer);
   snprintf(buffer, kBufferSize, "  filter_policy: %s\n",
            table_options_.filter_policy == nullptr ?
              "nullptr" : table_options_.filter_policy->Name());
   ret.append(buffer);
   snprintf(buffer, kBufferSize, "  whole_key_filtering: %d\n",
            table_options_.whole_key_filtering);
+  ret.append(buffer);
+  snprintf(buffer, kBufferSize, "  skip_table_builder_flush: %d\n",
+           table_options_.skip_table_builder_flush);
+  ret.append(buffer);
   snprintf(buffer, kBufferSize, "  format_version: %d\n",
            table_options_.format_version);
   ret.append(buffer);
   return ret;
 }
 
-const BlockBasedTableOptions& BlockBasedTableFactory::GetTableOptions() const {
+const BlockBasedTableOptions& BlockBasedTableFactory::table_options() const {
   return table_options_;
 }
 
 TableFactory* NewBlockBasedTableFactory(
-    const BlockBasedTableOptions& table_options) {
-  return new BlockBasedTableFactory(table_options);
+    const BlockBasedTableOptions& _table_options) {
+  return new BlockBasedTableFactory(_table_options);
 }
 
 const std::string BlockBasedTablePropertyNames::kIndexType =

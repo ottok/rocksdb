@@ -11,8 +11,6 @@
 // the last "sync". It then checks for data loss errors by purposely dropping
 // file data (or entire files) not protected by a "sync".
 
-#if !(defined NDEBUG) || !defined(OS_WIN)
-
 #include <map>
 #include <set>
 #include "db/db_impl.h"
@@ -647,16 +645,15 @@ class FaultInjectionTest : public testing::Test,
     return test::RandomString(&r, kValueSize, storage);
   }
 
-  Status OpenDB() {
-    delete db_;
-    db_ = NULL;
-    env_->ResetState();
-    return DB::Open(options_, dbname_, &db_);
-  }
-
   void CloseDB() {
     delete db_;
     db_ = NULL;
+  }
+
+  Status OpenDB() {
+    CloseDB();
+    env_->ResetState();
+    return DB::Open(options_, dbname_, &db_);
   }
 
   void DeleteAllData() {
@@ -786,6 +783,7 @@ TEST_P(FaultInjectionTest, WriteOptionSyncTest) {
   // Block the job queue to prevent flush job from running.
   env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask, &sleeping_task_low,
                  Env::Priority::HIGH);
+  sleeping_task_low.WaitUntilSleeping();
 
   WriteOptions write_options;
   write_options.sync = false;
@@ -869,6 +867,7 @@ TEST_P(FaultInjectionTest, ManualLogSyncTest) {
   // Block the job queue to prevent flush job from running.
   env_->Schedule(&test::SleepingBackgroundTask::DoSleepTask, &sleeping_task_low,
                  Env::Priority::HIGH);
+  sleeping_task_low.WaitUntilSleeping();
 
   WriteOptions write_options;
   write_options.sync = false;
@@ -902,13 +901,7 @@ INSTANTIATE_TEST_CASE_P(FaultTest, FaultInjectionTest, ::testing::Bool());
 
 }  // namespace rocksdb
 
-#endif // #if !(defined NDEBUG) || !defined(OS_WIN)
-
 int main(int argc, char** argv) {
-#if !(defined NDEBUG) || !defined(OS_WIN)
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
-#else
-  return 0;
-#endif
 }

@@ -7,6 +7,7 @@
 
 #include "utilities/transactions/transaction_base.h"
 
+#include "db/db_impl.h"
 #include "db/column_family.h"
 #include "rocksdb/comparator.h"
 #include "rocksdb/db.h"
@@ -20,14 +21,14 @@ TransactionBaseImpl::TransactionBaseImpl(DB* db,
     : db_(db),
       write_options_(write_options),
       cmp_(GetColumnFamilyUserComparator(db->DefaultColumnFamily())),
-      write_batch_(new WriteBatchWithIndex(cmp_, 0, true)),
-      start_time_(db_->GetEnv()->NowMicros()) {}
+      start_time_(db_->GetEnv()->NowMicros()),
+      write_batch_(cmp_, 0, true) {}
 
 TransactionBaseImpl::~TransactionBaseImpl() {}
 
 void TransactionBaseImpl::Clear() {
   save_points_.reset(nullptr);
-  write_batch_->Clear();
+  write_batch_.Clear();
   tracked_keys_.clear();
   num_puts_ = 0;
   num_deletes_ = 0;
@@ -35,7 +36,33 @@ void TransactionBaseImpl::Clear() {
 }
 
 void TransactionBaseImpl::SetSnapshot() {
-  snapshot_.reset(new ManagedSnapshot(db_));
+  assert(dynamic_cast<DBImpl*>(db_) != nullptr);
+  auto db_impl = reinterpret_cast<DBImpl*>(db_);
+
+  const Snapshot* snapshot = db_impl->GetSnapshotForWriteConflictBoundary();
+
+  // Set a custom deleter for the snapshot_ SharedPtr as the snapshot needs to
+  // be released, not deleted when it is no longer referenced.
+  snapshot_.reset(snapshot, std::bind(&TransactionBaseImpl::ReleaseSnapshot,
+                                      this, std::placeholders::_1, db_));
+  snapshot_needed_ = false;
+  snapshot_notifier_ = nullptr;
+}
+
+void TransactionBaseImpl::SetSnapshotOnNextOperation(
+    std::shared_ptr<TransactionNotifier> notifier) {
+  snapshot_needed_ = true;
+  snapshot_notifier_ = notifier;
+}
+
+void TransactionBaseImpl::SetSnapshotIfNeeded() {
+  if (snapshot_needed_) {
+    std::shared_ptr<TransactionNotifier> notifier = snapshot_notifier_;
+    SetSnapshot();
+    if (notifier != nullptr) {
+      notifier->SnapshotCreated(GetSnapshot());
+    }
+  }
 }
 
 Status TransactionBaseImpl::TryLock(ColumnFamilyHandle* column_family,
@@ -59,8 +86,9 @@ void TransactionBaseImpl::SetSavePoint() {
   if (save_points_ == nullptr) {
     save_points_.reset(new std::stack<TransactionBaseImpl::SavePoint>());
   }
-  save_points_->emplace(snapshot_, num_puts_, num_deletes_, num_merges_);
-  write_batch_->SetSavePoint();
+  save_points_->emplace(snapshot_, snapshot_needed_, snapshot_notifier_,
+                        num_puts_, num_deletes_, num_merges_);
+  write_batch_.SetSavePoint();
 }
 
 Status TransactionBaseImpl::RollbackToSavePoint() {
@@ -68,12 +96,14 @@ Status TransactionBaseImpl::RollbackToSavePoint() {
     // Restore saved SavePoint
     TransactionBaseImpl::SavePoint& save_point = save_points_->top();
     snapshot_ = save_point.snapshot_;
+    snapshot_needed_ = save_point.snapshot_needed_;
+    snapshot_notifier_ = save_point.snapshot_notifier_;
     num_puts_ = save_point.num_puts_;
     num_deletes_ = save_point.num_deletes_;
     num_merges_ = save_point.num_merges_;
 
     // Rollback batch
-    Status s = write_batch_->RollbackToSavePoint();
+    Status s = write_batch_.RollbackToSavePoint();
     assert(s.ok());
 
     // Rollback any keys that were tracked since the last savepoint
@@ -93,7 +123,7 @@ Status TransactionBaseImpl::RollbackToSavePoint() {
 
     return s;
   } else {
-    assert(write_batch_->RollbackToSavePoint().IsNotFound());
+    assert(write_batch_.RollbackToSavePoint().IsNotFound());
     return Status::NotFound();
   }
 }
@@ -101,8 +131,8 @@ Status TransactionBaseImpl::RollbackToSavePoint() {
 Status TransactionBaseImpl::Get(const ReadOptions& read_options,
                                 ColumnFamilyHandle* column_family,
                                 const Slice& key, std::string* value) {
-  return write_batch_->GetFromBatchAndDB(db_, read_options, column_family, key,
-                                         value);
+  return write_batch_.GetFromBatchAndDB(db_, read_options, column_family, key,
+                                        value);
 }
 
 Status TransactionBaseImpl::GetForUpdate(const ReadOptions& read_options,
@@ -163,7 +193,7 @@ Iterator* TransactionBaseImpl::GetIterator(const ReadOptions& read_options) {
   Iterator* db_iter = db_->NewIterator(read_options);
   assert(db_iter);
 
-  return write_batch_->NewIteratorWithBase(db_iter);
+  return write_batch_.NewIteratorWithBase(db_iter);
 }
 
 Iterator* TransactionBaseImpl::GetIterator(const ReadOptions& read_options,
@@ -171,7 +201,7 @@ Iterator* TransactionBaseImpl::GetIterator(const ReadOptions& read_options,
   Iterator* db_iter = db_->NewIterator(read_options, column_family);
   assert(db_iter);
 
-  return write_batch_->NewIteratorWithBase(column_family, db_iter);
+  return write_batch_.NewIteratorWithBase(column_family, db_iter);
 }
 
 Status TransactionBaseImpl::Put(ColumnFamilyHandle* column_family,
@@ -179,7 +209,7 @@ Status TransactionBaseImpl::Put(ColumnFamilyHandle* column_family,
   Status s = TryLock(column_family, key);
 
   if (s.ok()) {
-    write_batch_->Put(column_family, key, value);
+    GetBatchForWrite()->Put(column_family, key, value);
     num_puts_++;
   }
 
@@ -192,7 +222,7 @@ Status TransactionBaseImpl::Put(ColumnFamilyHandle* column_family,
   Status s = TryLock(column_family, key);
 
   if (s.ok()) {
-    write_batch_->Put(column_family, key, value);
+    GetBatchForWrite()->Put(column_family, key, value);
     num_puts_++;
   }
 
@@ -204,7 +234,7 @@ Status TransactionBaseImpl::Merge(ColumnFamilyHandle* column_family,
   Status s = TryLock(column_family, key);
 
   if (s.ok()) {
-    write_batch_->Merge(column_family, key, value);
+    GetBatchForWrite()->Merge(column_family, key, value);
     num_merges_++;
   }
 
@@ -216,7 +246,7 @@ Status TransactionBaseImpl::Delete(ColumnFamilyHandle* column_family,
   Status s = TryLock(column_family, key);
 
   if (s.ok()) {
-    write_batch_->Delete(column_family, key);
+    GetBatchForWrite()->Delete(column_family, key);
     num_deletes_++;
   }
 
@@ -228,7 +258,7 @@ Status TransactionBaseImpl::Delete(ColumnFamilyHandle* column_family,
   Status s = TryLock(column_family, key);
 
   if (s.ok()) {
-    write_batch_->Delete(column_family, key);
+    GetBatchForWrite()->Delete(column_family, key);
     num_deletes_++;
   }
 
@@ -240,7 +270,7 @@ Status TransactionBaseImpl::SingleDelete(ColumnFamilyHandle* column_family,
   Status s = TryLock(column_family, key);
 
   if (s.ok()) {
-    write_batch_->SingleDelete(column_family, key);
+    GetBatchForWrite()->SingleDelete(column_family, key);
     num_deletes_++;
   }
 
@@ -252,7 +282,7 @@ Status TransactionBaseImpl::SingleDelete(ColumnFamilyHandle* column_family,
   Status s = TryLock(column_family, key);
 
   if (s.ok()) {
-    write_batch_->SingleDelete(column_family, key);
+    GetBatchForWrite()->SingleDelete(column_family, key);
     num_deletes_++;
   }
 
@@ -265,7 +295,7 @@ Status TransactionBaseImpl::PutUntracked(ColumnFamilyHandle* column_family,
   Status s = TryLock(column_family, key, untracked);
 
   if (s.ok()) {
-    write_batch_->Put(column_family, key, value);
+    GetBatchForWrite()->Put(column_family, key, value);
     num_puts_++;
   }
 
@@ -279,7 +309,7 @@ Status TransactionBaseImpl::PutUntracked(ColumnFamilyHandle* column_family,
   Status s = TryLock(column_family, key, untracked);
 
   if (s.ok()) {
-    write_batch_->Put(column_family, key, value);
+    GetBatchForWrite()->Put(column_family, key, value);
     num_puts_++;
   }
 
@@ -293,7 +323,7 @@ Status TransactionBaseImpl::MergeUntracked(ColumnFamilyHandle* column_family,
   Status s = TryLock(column_family, key, untracked);
 
   if (s.ok()) {
-    write_batch_->Merge(column_family, key, value);
+    GetBatchForWrite()->Merge(column_family, key, value);
     num_merges_++;
   }
 
@@ -306,7 +336,7 @@ Status TransactionBaseImpl::DeleteUntracked(ColumnFamilyHandle* column_family,
   Status s = TryLock(column_family, key, untracked);
 
   if (s.ok()) {
-    write_batch_->Delete(column_family, key);
+    GetBatchForWrite()->Delete(column_family, key);
     num_deletes_++;
   }
 
@@ -319,7 +349,7 @@ Status TransactionBaseImpl::DeleteUntracked(ColumnFamilyHandle* column_family,
   Status s = TryLock(column_family, key, untracked);
 
   if (s.ok()) {
-    write_batch_->Delete(column_family, key);
+    GetBatchForWrite()->Delete(column_family, key);
     num_deletes_++;
   }
 
@@ -327,11 +357,11 @@ Status TransactionBaseImpl::DeleteUntracked(ColumnFamilyHandle* column_family,
 }
 
 void TransactionBaseImpl::PutLogData(const Slice& blob) {
-  write_batch_->PutLogData(blob);
+  write_batch_.PutLogData(blob);
 }
 
 WriteBatchWithIndex* TransactionBaseImpl::GetWriteBatch() {
-  return write_batch_.get();
+  return &write_batch_;
 }
 
 uint64_t TransactionBaseImpl::GetElapsedTime() const {
@@ -378,6 +408,24 @@ const TransactionKeyMap* TransactionBaseImpl::GetTrackedKeysSinceSavePoint() {
   }
 
   return nullptr;
+}
+
+// Gets the write batch that should be used for Put/Merge/Deletes.
+//
+// Returns either a WriteBatch or WriteBatchWithIndex depending on whether
+// DisableIndexing() has been called.
+WriteBatchBase* TransactionBaseImpl::GetBatchForWrite() {
+  if (indexing_enabled_) {
+    // Use WriteBatchWithIndex
+    return &write_batch_;
+  } else {
+    // Don't use WriteBatchWithIndex. Return base WriteBatch.
+    return write_batch_.GetWriteBatch();
+  }
+}
+
+void TransactionBaseImpl::ReleaseSnapshot(const Snapshot* snapshot, DB* db) {
+  db->ReleaseSnapshot(snapshot);
 }
 
 }  // namespace rocksdb

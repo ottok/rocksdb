@@ -21,8 +21,8 @@
 #include "rocksdb/status.h"
 #include "rocksdb/write_batch.h"
 #include "rocksjni/portal.h"
+#include "table/scoped_arena_iterator.h"
 #include "util/logging.h"
-#include "util/scoped_arena_iterator.h"
 #include "util/testharness.h"
 
 /*
@@ -52,7 +52,7 @@ jbyteArray Java_org_rocksdb_WriteBatchTest_getContents(
   std::string state;
   rocksdb::ColumnFamilyMemTablesDefault cf_mems_default(mem);
   rocksdb::Status s =
-      rocksdb::WriteBatchInternal::InsertInto(b, &cf_mems_default);
+      rocksdb::WriteBatchInternal::InsertInto(b, &cf_mems_default, nullptr);
   int count = 0;
   rocksdb::Arena arena;
   rocksdb::ScopedArenaIterator iter(mem->NewIterator(
@@ -60,7 +60,8 @@ jbyteArray Java_org_rocksdb_WriteBatchTest_getContents(
   for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
     rocksdb::ParsedInternalKey ikey;
     memset(reinterpret_cast<void*>(&ikey), 0, sizeof(ikey));
-    assert(rocksdb::ParseInternalKey(iter->key(), &ikey));
+    bool parsed = rocksdb::ParseInternalKey(iter->key(), &ikey);
+    assert(parsed);
     switch (ikey.type) {
       case rocksdb::kTypeValue:
         state.append("Put(");

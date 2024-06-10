@@ -109,6 +109,7 @@ enum Tickers : uint32_t {
   // Writer has to wait for compaction or flush to finish.
   STALL_MICROS,
   // The wait time for db mutex.
+  // Disabled by default. To enable it set stats level to kAll
   DB_MUTEX_WAIT_MICROS,
   RATE_LIMIT_DELAY_MILLIS,
   NO_ITERATORS,  // number of iterators currently open
@@ -145,7 +146,7 @@ enum Tickers : uint32_t {
   // Writes can be processed by requesting thread or by the thread at the
   // head of the writers queue.
   WRITE_DONE_BY_SELF,
-  WRITE_DONE_BY_OTHER,
+  WRITE_DONE_BY_OTHER,  // Equivalent to writes done for others
   WRITE_TIMEDOUT,       // Number of writes ending up with timed-out.
   WRITE_WITH_WAL,       // Number of Write calls that request WAL
   COMPACT_READ_BYTES,   // Bytes read during compaction
@@ -279,6 +280,10 @@ enum Histograms : uint32_t {
   SST_READ_MICROS,
   // The number of subcompactions actually scheduled during a compaction
   NUM_SUBCOMPACTIONS_SCHEDULED,
+  // Value size distribution in each operation
+  BYTES_PER_READ,
+  BYTES_PER_WRITE,
+  BYTES_PER_MULTIGET,
   HISTOGRAM_ENUM_MAX,  // TODO(ldemailly): enforce HistogramsNameMap match
 };
 
@@ -306,6 +311,9 @@ const std::vector<std::pair<Histograms, std::string>> HistogramsNameMap = {
     {WRITE_STALL, "rocksdb.db.write.stall"},
     {SST_READ_MICROS, "rocksdb.sst.read.micros"},
     {NUM_SUBCOMPACTIONS_SCHEDULED, "rocksdb.num.subcompactions.scheduled"},
+    {BYTES_PER_READ, "rocksdb.bytes.per.read"},
+    {BYTES_PER_WRITE, "rocksdb.bytes.per.write"},
+    {BYTES_PER_MULTIGET, "rocksdb.bytes.per.multiget"},
 };
 
 struct HistogramData {
@@ -314,6 +322,16 @@ struct HistogramData {
   double percentile99;
   double average;
   double standard_deviation;
+};
+
+enum StatsLevel {
+  // Collect all stats except the counters requiring to get time inside the
+  // mutex lock.
+  kExceptTimeForMutex,
+  // Collect all stats, including measuring duration of mutex operations.
+  // If getting time is expensive on the platform to run, it can
+  // reduce scalability to more threads, especialy for writes.
+  kAll,
 };
 
 // Analyze the performance of a db
@@ -339,6 +357,8 @@ class Statistics {
   virtual bool HistEnabledForType(uint32_t type) const {
     return type < HISTOGRAM_ENUM_MAX;
   }
+
+  StatsLevel stats_level_ = kExceptTimeForMutex;
 };
 
 // Create a concrete DBStatistics object

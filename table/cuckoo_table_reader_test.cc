@@ -148,7 +148,7 @@ class CuckooReaderTest : public testing::Test {
     CuckooTableReader reader(ioptions, std::move(file_reader), file_size, ucomp,
                              GetSliceHash);
     ASSERT_OK(reader.status());
-    Iterator* it = reader.NewIterator(ReadOptions(), nullptr);
+    InternalIterator* it = reader.NewIterator(ReadOptions(), nullptr);
     ASSERT_OK(it->status());
     ASSERT_TRUE(!it->Valid());
     it->SeekToFirst();
@@ -196,7 +196,7 @@ class CuckooReaderTest : public testing::Test {
     ASSERT_TRUE(keys[num_items/2] == it->key());
     ASSERT_TRUE(values[num_items/2] == it->value());
     ASSERT_OK(it->status());
-    it->~Iterator();
+    it->~InternalIterator();
   }
 
   std::vector<std::string> keys;
@@ -500,7 +500,7 @@ void ReadKeys(uint64_t num, uint32_t batch_size) {
                  &get_context);
     }
   }
-  float time_per_op = (env->NowMicros() - start_time) * 1.0 / num;
+  float time_per_op = (env->NowMicros() - start_time) * 1.0f / num;
   fprintf(stderr,
       "Time taken per op is %.3fus (%.1f Mqps) with batch size of %u\n",
       time_per_op, 1.0 / time_per_op, batch_size);

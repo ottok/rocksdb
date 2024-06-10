@@ -12,19 +12,17 @@
 #endif
 
 #include <cctype>
+#include <cstring>
 #include <unordered_map>
 #include <inttypes.h>
 
 #include "rocksdb/cache.h"
-#include "rocksdb/compaction_filter.h"
 #include "rocksdb/convenience.h"
-#include "rocksdb/merge_operator.h"
-#include "rocksdb/options.h"
-#include "rocksdb/table.h"
+#include "rocksdb/memtablerep.h"
 #include "rocksdb/utilities/leveldb_options.h"
-#include "table/block_based_table_factory.h"
 #include "util/options_helper.h"
 #include "util/options_parser.h"
+#include "util/options_sanity_check.h"
 #include "util/random.h"
 #include "util/testharness.h"
 #include "util/testutil.h"
@@ -72,163 +70,6 @@ Options PrintAndGetOptions(size_t total_write_buffer_limit,
   }
   return options;
 }
-
-class StringEnv : public EnvWrapper {
- public:
-  class SeqStringSource : public SequentialFile {
-   public:
-    explicit SeqStringSource(const std::string& data)
-        : data_(data), offset_(0) {}
-    ~SeqStringSource() {}
-    Status Read(size_t n, Slice* result, char* scratch) override {
-      std::string output;
-      if (offset_ < data_.size()) {
-        n = std::min(data_.size() - offset_, n);
-        memcpy(scratch, data_.data() + offset_, n);
-        offset_ += n;
-        *result = Slice(scratch, n);
-      } else {
-        return Status::InvalidArgument(
-            "Attemp to read when it already reached eof.");
-      }
-      return Status::OK();
-    }
-    Status Skip(uint64_t n) override {
-      if (offset_ >= data_.size()) {
-        return Status::InvalidArgument(
-            "Attemp to read when it already reached eof.");
-      }
-      // TODO(yhchiang): Currently doesn't handle the overflow case.
-      offset_ += n;
-      return Status::OK();
-    }
-
-   private:
-    std::string data_;
-    size_t offset_;
-  };
-
-  class StringSink : public WritableFile {
-   public:
-    explicit StringSink(std::string* contents)
-        : WritableFile(), contents_(contents) {}
-    virtual Status Truncate(uint64_t size) override {
-      contents_->resize(size);
-      return Status::OK();
-    }
-    virtual Status Close() override { return Status::OK(); }
-    virtual Status Flush() override { return Status::OK(); }
-    virtual Status Sync() override { return Status::OK(); }
-    virtual Status Append(const Slice& slice) override {
-      contents_->append(slice.data(), slice.size());
-      return Status::OK();
-    }
-
-   private:
-    std::string* contents_;
-  };
-
-  explicit StringEnv(Env* t) : EnvWrapper(t) {}
-  virtual ~StringEnv() {}
-
-  const std::string& GetContent(const std::string& f) { return files_[f]; }
-
-  const Status WriteToNewFile(const std::string& file_name,
-                              const std::string& content) {
-    unique_ptr<WritableFile> r;
-    auto s = NewWritableFile(file_name, &r, EnvOptions());
-    if (!s.ok()) {
-      return s;
-    }
-    r->Append(content);
-    r->Flush();
-    r->Close();
-    assert(files_[file_name] == content);
-    return Status::OK();
-  }
-
-  // The following text is boilerplate that forwards all methods to target()
-  Status NewSequentialFile(const std::string& f, unique_ptr<SequentialFile>* r,
-                           const EnvOptions& options) override {
-    auto iter = files_.find(f);
-    if (iter == files_.end()) {
-      return Status::NotFound("The specified file does not exist", f);
-    }
-    r->reset(new SeqStringSource(iter->second));
-    return Status::OK();
-  }
-  Status NewRandomAccessFile(const std::string& f,
-                             unique_ptr<RandomAccessFile>* r,
-                             const EnvOptions& options) override {
-    return Status::NotSupported();
-  }
-  Status NewWritableFile(const std::string& f, unique_ptr<WritableFile>* r,
-                         const EnvOptions& options) override {
-    auto iter = files_.find(f);
-    if (iter != files_.end()) {
-      return Status::IOError("The specified file already exists", f);
-    }
-    r->reset(new StringSink(&files_[f]));
-    return Status::OK();
-  }
-  virtual Status NewDirectory(const std::string& name,
-                              unique_ptr<Directory>* result) override {
-    return Status::NotSupported();
-  }
-  Status FileExists(const std::string& f) override {
-    if (files_.find(f) == files_.end()) {
-      return Status::NotFound();
-    }
-    return Status::OK();
-  }
-  Status GetChildren(const std::string& dir,
-                     std::vector<std::string>* r) override {
-    return Status::NotSupported();
-  }
-  Status DeleteFile(const std::string& f) override {
-    files_.erase(f);
-    return Status::OK();
-  }
-  Status CreateDir(const std::string& d) override {
-    return Status::NotSupported();
-  }
-  Status CreateDirIfMissing(const std::string& d) override {
-    return Status::NotSupported();
-  }
-  Status DeleteDir(const std::string& d) override {
-    return Status::NotSupported();
-  }
-  Status GetFileSize(const std::string& f, uint64_t* s) override {
-    auto iter = files_.find(f);
-    if (iter == files_.end()) {
-      return Status::NotFound("The specified file does not exist:", f);
-    }
-    *s = iter->second.size();
-    return Status::OK();
-  }
-
-  Status GetFileModificationTime(const std::string& fname,
-                                 uint64_t* file_mtime) override {
-    return Status::NotSupported();
-  }
-
-  Status RenameFile(const std::string& s, const std::string& t) override {
-    return Status::NotSupported();
-  }
-
-  Status LinkFile(const std::string& s, const std::string& t) override {
-    return Status::NotSupported();
-  }
-
-  Status LockFile(const std::string& f, FileLock** l) override {
-    return Status::NotSupported();
-  }
-
-  Status UnlockFile(FileLock* l) override { return Status::NotSupported(); }
-
- protected:
-  std::unordered_map<std::string, std::string> files_;
-};
 
 class OptionsTest : public testing::Test {};
 
@@ -323,6 +164,7 @@ TEST_F(OptionsTest, GetOptionsFromMapTest) {
       {"max_log_file_size", "37"},
       {"log_file_time_to_roll", "38"},
       {"keep_log_file_num", "39"},
+      {"recycle_log_file_num", "5"},
       {"max_manifest_file_size", "40"},
       {"table_cache_numshardbits", "41"},
       {"WAL_ttl_seconds", "43"},
@@ -338,8 +180,11 @@ TEST_F(OptionsTest, GetOptionsFromMapTest) {
       {"use_adaptive_mutex", "false"},
       {"new_table_reader_for_compaction_inputs", "true"},
       {"compaction_readahead_size", "100"},
+      {"random_access_max_buffer_size", "3145728"},
+      {"writable_file_max_buffer_size", "314159"},
       {"bytes_per_sync", "47"},
-      {"wal_bytes_per_sync", "48"}, };
+      {"wal_bytes_per_sync", "48"},
+  };
 
   ColumnFamilyOptions base_cf_opt;
   ColumnFamilyOptions new_cf_opt;
@@ -431,6 +276,7 @@ TEST_F(OptionsTest, GetOptionsFromMapTest) {
   ASSERT_EQ(new_db_opt.max_log_file_size, 37U);
   ASSERT_EQ(new_db_opt.log_file_time_to_roll, 38U);
   ASSERT_EQ(new_db_opt.keep_log_file_num, 39U);
+  ASSERT_EQ(new_db_opt.recycle_log_file_num, 5U);
   ASSERT_EQ(new_db_opt.max_manifest_file_size, static_cast<uint64_t>(40));
   ASSERT_EQ(new_db_opt.table_cache_numshardbits, 41);
   ASSERT_EQ(new_db_opt.WAL_ttl_seconds, static_cast<uint64_t>(43));
@@ -446,6 +292,8 @@ TEST_F(OptionsTest, GetOptionsFromMapTest) {
   ASSERT_EQ(new_db_opt.use_adaptive_mutex, false);
   ASSERT_EQ(new_db_opt.new_table_reader_for_compaction_inputs, true);
   ASSERT_EQ(new_db_opt.compaction_readahead_size, 100);
+  ASSERT_EQ(new_db_opt.random_access_max_buffer_size, 3145728);
+  ASSERT_EQ(new_db_opt.writable_file_max_buffer_size, 314159);
   ASSERT_EQ(new_db_opt.bytes_per_sync, static_cast<uint64_t>(47));
   ASSERT_EQ(new_db_opt.wal_bytes_per_sync, static_cast<uint64_t>(48));
 }
@@ -585,6 +433,31 @@ TEST_F(OptionsTest, GetColumnFamilyOptionsFromStringTest) {
   ASSERT_NOK(GetColumnFamilyOptionsFromString(base_cf_opt,
               "optimize_filters_for_hits=junk",
               &new_cf_opt));
+
+  // Nested plain table options
+  // Emtpy
+  ASSERT_OK(GetColumnFamilyOptionsFromString(base_cf_opt,
+            "write_buffer_size=10;max_write_buffer_number=16;"
+            "plain_table_factory={};arena_block_size=1024",
+            &new_cf_opt));
+  ASSERT_TRUE(new_cf_opt.table_factory != nullptr);
+  ASSERT_EQ(std::string(new_cf_opt.table_factory->Name()), "PlainTable");
+  // Non-empty
+  ASSERT_OK(GetColumnFamilyOptionsFromString(base_cf_opt,
+            "write_buffer_size=10;max_write_buffer_number=16;"
+            "plain_table_factory={user_key_len=66;bloom_bits_per_key=20;};"
+            "arena_block_size=1024",
+            &new_cf_opt));
+  ASSERT_TRUE(new_cf_opt.table_factory != nullptr);
+  ASSERT_EQ(std::string(new_cf_opt.table_factory->Name()), "PlainTable");
+
+  // memtable factory
+  ASSERT_OK(GetColumnFamilyOptionsFromString(base_cf_opt,
+            "write_buffer_size=10;max_write_buffer_number=16;"
+            "memtable=skip_list:10;arena_block_size=1024",
+            &new_cf_opt));
+  ASSERT_TRUE(new_cf_opt.memtable_factory != nullptr);
+  ASSERT_EQ(std::string(new_cf_opt.memtable_factory->Name()), "SkipListFactory");
 }
 #endif  // !ROCKSDB_LITE
 
@@ -598,7 +471,8 @@ TEST_F(OptionsTest, GetBlockBasedTableOptionsFromString) {
             "checksum=kxxHash;hash_index_allow_collision=1;no_block_cache=1;"
             "block_cache=1M;block_cache_compressed=1k;block_size=1024;"
             "block_size_deviation=8;block_restart_interval=4;"
-            "filter_policy=bloomfilter:4:true;whole_key_filtering=1",
+            "filter_policy=bloomfilter:4:true;whole_key_filtering=1;"
+            "skip_table_builder_flush=1",
             &new_opt));
   ASSERT_TRUE(new_opt.cache_index_and_filter_blocks);
   ASSERT_EQ(new_opt.index_type, BlockBasedTableOptions::kHashSearch);
@@ -613,6 +487,7 @@ TEST_F(OptionsTest, GetBlockBasedTableOptionsFromString) {
   ASSERT_EQ(new_opt.block_size_deviation, 8);
   ASSERT_EQ(new_opt.block_restart_interval, 4);
   ASSERT_TRUE(new_opt.filter_policy != nullptr);
+  ASSERT_TRUE(new_opt.skip_table_builder_flush);
 
   // unknown option
   ASSERT_NOK(GetBlockBasedTableOptionsFromString(table_opt,
@@ -643,6 +518,79 @@ TEST_F(OptionsTest, GetBlockBasedTableOptionsFromString) {
 }
 #endif  // !ROCKSDB_LITE
 
+
+#ifndef ROCKSDB_LITE  // GetPlainTableOptionsFromString is not supported
+TEST_F(OptionsTest, GetPlainTableOptionsFromString) {
+  PlainTableOptions table_opt;
+  PlainTableOptions new_opt;
+  // make sure default values are overwritten by something else
+  ASSERT_OK(GetPlainTableOptionsFromString(table_opt,
+            "user_key_len=66;bloom_bits_per_key=20;hash_table_ratio=0.5;"
+            "index_sparseness=8;huge_page_tlb_size=4;encoding_type=kPrefix;"
+            "full_scan_mode=true;store_index_in_file=true",
+            &new_opt));
+  ASSERT_EQ(new_opt.user_key_len, 66);
+  ASSERT_EQ(new_opt.bloom_bits_per_key, 20);
+  ASSERT_EQ(new_opt.hash_table_ratio, 0.5);
+  ASSERT_EQ(new_opt.index_sparseness, 8);
+  ASSERT_EQ(new_opt.huge_page_tlb_size, 4);
+  ASSERT_EQ(new_opt.encoding_type, EncodingType::kPrefix);
+  ASSERT_TRUE(new_opt.full_scan_mode);
+  ASSERT_TRUE(new_opt.store_index_in_file);
+
+  // unknown option
+  ASSERT_NOK(GetPlainTableOptionsFromString(table_opt,
+             "user_key_len=66;bloom_bits_per_key=20;hash_table_ratio=0.5;"
+             "bad_option=1",
+             &new_opt));
+
+  // unrecognized EncodingType
+  ASSERT_NOK(GetPlainTableOptionsFromString(table_opt,
+             "user_key_len=66;bloom_bits_per_key=20;hash_table_ratio=0.5;"
+             "encoding_type=kPrefixXX",
+             &new_opt));
+}
+#endif  // !ROCKSDB_LITE
+
+#ifndef ROCKSDB_LITE  // GetMemTableRepFactoryFromString is not supported
+TEST_F(OptionsTest, GetMemTableRepFactoryFromString) {
+  std::unique_ptr<MemTableRepFactory> new_mem_factory = nullptr;
+
+  ASSERT_OK(GetMemTableRepFactoryFromString("skip_list", &new_mem_factory));
+  ASSERT_OK(GetMemTableRepFactoryFromString("skip_list:16", &new_mem_factory));
+  ASSERT_EQ(std::string(new_mem_factory->Name()), "SkipListFactory");
+  ASSERT_NOK(GetMemTableRepFactoryFromString("skip_list:16:invalid_opt",
+                                             &new_mem_factory));
+
+  ASSERT_OK(GetMemTableRepFactoryFromString("prefix_hash", &new_mem_factory));
+  ASSERT_OK(GetMemTableRepFactoryFromString("prefix_hash:1000",
+                                            &new_mem_factory));
+  ASSERT_EQ(std::string(new_mem_factory->Name()), "HashSkipListRepFactory");
+  ASSERT_NOK(GetMemTableRepFactoryFromString("prefix_hash:1000:invalid_opt",
+                                             &new_mem_factory));
+
+  ASSERT_OK(GetMemTableRepFactoryFromString("hash_linkedlist",
+                                            &new_mem_factory));
+  ASSERT_OK(GetMemTableRepFactoryFromString("hash_linkedlist:1000",
+                                            &new_mem_factory));
+  ASSERT_EQ(std::string(new_mem_factory->Name()), "HashLinkListRepFactory");
+  ASSERT_NOK(GetMemTableRepFactoryFromString("hash_linkedlist:1000:invalid_opt",
+                                             &new_mem_factory));
+
+  ASSERT_OK(GetMemTableRepFactoryFromString("vector", &new_mem_factory));
+  ASSERT_OK(GetMemTableRepFactoryFromString("vector:1024", &new_mem_factory));
+  ASSERT_EQ(std::string(new_mem_factory->Name()), "VectorRepFactory");
+  ASSERT_NOK(GetMemTableRepFactoryFromString("vector:1024:invalid_opt",
+                                             &new_mem_factory));
+
+  ASSERT_NOK(GetMemTableRepFactoryFromString("cuckoo", &new_mem_factory));
+  ASSERT_OK(GetMemTableRepFactoryFromString("cuckoo:1024", &new_mem_factory));
+  ASSERT_EQ(std::string(new_mem_factory->Name()), "HashCuckooRepFactory");
+
+  ASSERT_NOK(GetMemTableRepFactoryFromString("bad_factory", &new_mem_factory));
+}
+#endif  // !ROCKSDB_LITE
+
 #ifndef ROCKSDB_LITE  // GetOptionsFromString is not supported in RocksDB Lite
 TEST_F(OptionsTest, GetOptionsFromStringTest) {
   Options base_options, new_options;
@@ -663,7 +611,7 @@ TEST_F(OptionsTest, GetOptionsFromStringTest) {
   ASSERT_EQ(new_options.max_write_buffer_number, 16);
   BlockBasedTableOptions new_block_based_table_options =
       dynamic_cast<BlockBasedTableFactory*>(new_options.table_factory.get())
-          ->GetTableOptions();
+          ->table_options();
   ASSERT_EQ(new_block_based_table_options.block_cache->GetCapacity(), 1U << 20);
   ASSERT_EQ(new_block_based_table_options.block_size, 4U);
   // don't overwrite block based table options
@@ -674,69 +622,12 @@ TEST_F(OptionsTest, GetOptionsFromStringTest) {
   ASSERT_TRUE(new_options.rate_limiter.get() != nullptr);
 }
 
-namespace {
-void RandomInitDBOptions(DBOptions* db_opt, Random* rnd) {
-  // boolean options
-  db_opt->advise_random_on_open = rnd->Uniform(2);
-  db_opt->allow_mmap_reads = rnd->Uniform(2);
-  db_opt->allow_mmap_writes = rnd->Uniform(2);
-  db_opt->allow_os_buffer = rnd->Uniform(2);
-  db_opt->create_if_missing = rnd->Uniform(2);
-  db_opt->create_missing_column_families = rnd->Uniform(2);
-  db_opt->disableDataSync = rnd->Uniform(2);
-  db_opt->enable_thread_tracking = rnd->Uniform(2);
-  db_opt->error_if_exists = rnd->Uniform(2);
-  db_opt->is_fd_close_on_exec = rnd->Uniform(2);
-  db_opt->paranoid_checks = rnd->Uniform(2);
-  db_opt->skip_log_error_on_recovery = rnd->Uniform(2);
-  db_opt->skip_stats_update_on_db_open = rnd->Uniform(2);
-  db_opt->use_adaptive_mutex = rnd->Uniform(2);
-  db_opt->use_fsync = rnd->Uniform(2);
-
-  // int options
-  db_opt->max_background_compactions = rnd->Uniform(100);
-  db_opt->max_background_flushes = rnd->Uniform(100);
-  db_opt->max_file_opening_threads = rnd->Uniform(100);
-  db_opt->max_open_files = rnd->Uniform(100);
-  db_opt->table_cache_numshardbits = rnd->Uniform(100);
-
-  // size_t options
-  db_opt->db_write_buffer_size = rnd->Uniform(10000);
-  db_opt->keep_log_file_num = rnd->Uniform(10000);
-  db_opt->log_file_time_to_roll = rnd->Uniform(10000);
-  db_opt->manifest_preallocation_size = rnd->Uniform(10000);
-  db_opt->max_log_file_size = rnd->Uniform(10000);
-
-  // std::string options
-  db_opt->db_log_dir = "path/to/db_log_dir";
-  db_opt->wal_dir = "path/to/wal_dir";
-
-  // uint32_t options
-  db_opt->max_subcompactions = rnd->Uniform(100000);
-
-  // uint64_t options
-  static const uint64_t uint_max = static_cast<uint64_t>(UINT_MAX);
-  db_opt->WAL_size_limit_MB = uint_max + rnd->Uniform(100000);
-  db_opt->WAL_ttl_seconds = uint_max + rnd->Uniform(100000);
-  db_opt->bytes_per_sync = uint_max + rnd->Uniform(100000);
-  db_opt->delayed_write_rate = uint_max + rnd->Uniform(100000);
-  db_opt->delete_obsolete_files_period_micros = uint_max + rnd->Uniform(100000);
-  db_opt->max_manifest_file_size = uint_max + rnd->Uniform(100000);
-  db_opt->max_total_wal_size = uint_max + rnd->Uniform(100000);
-  db_opt->wal_bytes_per_sync = uint_max + rnd->Uniform(100000);
-
-  // unsigned int options
-  db_opt->stats_dump_period_sec = rnd->Uniform(100000);
-}
-
-}  // namespace
-
 TEST_F(OptionsTest, DBOptionsSerialization) {
   Options base_options, new_options;
   Random rnd(301);
 
   // Phase 1: Make big change in base_options
-  RandomInitDBOptions(&base_options, &rnd);
+  test::RandomInitDBOptions(&base_options, &rnd);
 
   // Phase 2: obtain a string from base_option
   std::string base_options_file_content;
@@ -749,212 +640,12 @@ TEST_F(OptionsTest, DBOptionsSerialization) {
   ASSERT_OK(RocksDBOptionsParser::VerifyDBOptions(base_options, new_options));
 }
 
-namespace {
-CompressionType RandomCompressionType(Random* rnd) {
-  return static_cast<CompressionType>(rnd->Uniform(6));
-}
-
-void RandomCompressionTypeVector(const size_t count,
-                                 std::vector<CompressionType>* types,
-                                 Random* rnd) {
-  types->clear();
-  for (size_t i = 0; i < count; ++i) {
-    types->emplace_back(RandomCompressionType(rnd));
-  }
-}
-
-const SliceTransform* RandomSliceTransform(Random* rnd, int pre_defined = -1) {
-  int random_num = pre_defined >= 0 ? pre_defined : rnd->Uniform(4);
-  switch (random_num) {
-    case 0:
-      return NewFixedPrefixTransform(rnd->Uniform(20) + 1);
-    case 1:
-      return NewCappedPrefixTransform(rnd->Uniform(20) + 1);
-    case 2:
-      return NewNoopTransform();
-    default:
-      return nullptr;
-  }
-}
-
-TableFactory* RandomTableFactory(Random* rnd, int pre_defined = -1) {
-  int random_num = pre_defined >= 0 ? pre_defined : rnd->Uniform(3);
-  switch (random_num) {
-    case 0:
-      return NewPlainTableFactory();
-    case 1:
-      return NewCuckooTableFactory();
-    default:
-      return NewBlockBasedTableFactory();
-  }
-}
-
-std::string RandomString(Random* rnd, const size_t len) {
-  std::stringstream ss;
-  for (size_t i = 0; i < len; ++i) {
-    ss << static_cast<char>(rnd->Uniform(26) + 'a');
-  }
-  return ss.str();
-}
-
-class ChanglingMergeOperator : public MergeOperator {
- public:
-  explicit ChanglingMergeOperator(const std::string& name)
-      : name_(name + "MergeOperator") {}
-  ~ChanglingMergeOperator() {}
-
-  void SetName(const std::string& name) { name_ = name; }
-
-  virtual bool FullMerge(const Slice& key, const Slice* existing_value,
-                         const std::deque<std::string>& operand_list,
-                         std::string* new_value,
-                         Logger* logger) const override {
-    return false;
-  }
-  virtual bool PartialMergeMulti(const Slice& key,
-                                 const std::deque<Slice>& operand_list,
-                                 std::string* new_value,
-                                 Logger* logger) const override {
-    return false;
-  }
-  virtual const char* Name() const override { return name_.c_str(); }
-
- protected:
-  std::string name_;
-};
-
-MergeOperator* RandomMergeOperator(Random* rnd) {
-  return new ChanglingMergeOperator(RandomString(rnd, 10));
-}
-
-class ChanglingCompactionFilter : public CompactionFilter {
- public:
-  explicit ChanglingCompactionFilter(const std::string& name)
-      : name_(name + "CompactionFilter") {}
-  ~ChanglingCompactionFilter() {}
-
-  void SetName(const std::string& name) { name_ = name; }
-
-  bool Filter(int level, const Slice& key, const Slice& existing_value,
-              std::string* new_value, bool* value_changed) const override {
-    return false;
-  }
-
-  const char* Name() const override { return name_.c_str(); }
-
- private:
-  std::string name_;
-};
-
-CompactionFilter* RandomCompactionFilter(Random* rnd) {
-  return new ChanglingCompactionFilter(RandomString(rnd, 10));
-}
-
-class ChanglingCompactionFilterFactory : public CompactionFilterFactory {
- public:
-  explicit ChanglingCompactionFilterFactory(const std::string& name)
-      : name_(name + "CompactionFilterFactory") {}
-  ~ChanglingCompactionFilterFactory() {}
-
-  void SetName(const std::string& name) { name_ = name; }
-
-  std::unique_ptr<CompactionFilter> CreateCompactionFilter(
-      const CompactionFilter::Context& context) override {
-    return std::unique_ptr<CompactionFilter>();
-  }
-
-  // Returns a name that identifies this compaction filter factory.
-  const char* Name() const override { return name_.c_str(); }
-
- protected:
-  std::string name_;
-};
-
-CompactionFilterFactory* RandomCompactionFilterFactory(Random* rnd) {
-  return new ChanglingCompactionFilterFactory(RandomString(rnd, 10));
-}
-
-// Note that the caller is responsible for releasing non-null
-// cf_opt->compaction_filter.
-void RandomInitCFOptions(ColumnFamilyOptions* cf_opt, Random* rnd) {
-  cf_opt->compaction_style = (CompactionStyle)(rnd->Uniform(4));
-
-  // boolean options
-  cf_opt->compaction_measure_io_stats = rnd->Uniform(2);
-  cf_opt->disable_auto_compactions = rnd->Uniform(2);
-  cf_opt->filter_deletes = rnd->Uniform(2);
-  cf_opt->inplace_update_support = rnd->Uniform(2);
-  cf_opt->level_compaction_dynamic_level_bytes = rnd->Uniform(2);
-  cf_opt->optimize_filters_for_hits = rnd->Uniform(2);
-  cf_opt->paranoid_file_checks = rnd->Uniform(2);
-  cf_opt->purge_redundant_kvs_while_flush = rnd->Uniform(2);
-  cf_opt->verify_checksums_in_compaction = rnd->Uniform(2);
-
-  // double options
-  cf_opt->hard_rate_limit = static_cast<double>(rnd->Uniform(10000)) / 13;
-  cf_opt->soft_rate_limit = static_cast<double>(rnd->Uniform(10000)) / 13;
-
-  // int options
-  cf_opt->expanded_compaction_factor = rnd->Uniform(100);
-  cf_opt->level0_file_num_compaction_trigger = rnd->Uniform(100);
-  cf_opt->level0_slowdown_writes_trigger = rnd->Uniform(100);
-  cf_opt->level0_stop_writes_trigger = rnd->Uniform(100);
-  cf_opt->max_bytes_for_level_multiplier = rnd->Uniform(100);
-  cf_opt->max_grandparent_overlap_factor = rnd->Uniform(100);
-  cf_opt->max_mem_compaction_level = rnd->Uniform(100);
-  cf_opt->max_write_buffer_number = rnd->Uniform(100);
-  cf_opt->max_write_buffer_number_to_maintain = rnd->Uniform(100);
-  cf_opt->min_write_buffer_number_to_merge = rnd->Uniform(100);
-  cf_opt->num_levels = rnd->Uniform(100);
-  cf_opt->source_compaction_factor = rnd->Uniform(100);
-  cf_opt->target_file_size_multiplier = rnd->Uniform(100);
-
-  // size_t options
-  cf_opt->arena_block_size = rnd->Uniform(10000);
-  cf_opt->inplace_update_num_locks = rnd->Uniform(10000);
-  cf_opt->max_successive_merges = rnd->Uniform(10000);
-  cf_opt->memtable_prefix_bloom_huge_page_tlb_size = rnd->Uniform(10000);
-  cf_opt->write_buffer_size = rnd->Uniform(10000);
-
-  // uint32_t options
-  cf_opt->bloom_locality = rnd->Uniform(10000);
-  cf_opt->memtable_prefix_bloom_bits = rnd->Uniform(10000);
-  cf_opt->memtable_prefix_bloom_probes = rnd->Uniform(10000);
-  cf_opt->min_partial_merge_operands = rnd->Uniform(10000);
-  cf_opt->max_bytes_for_level_base = rnd->Uniform(10000);
-
-  // uint64_t options
-  static const uint64_t uint_max = static_cast<uint64_t>(UINT_MAX);
-  cf_opt->max_sequential_skip_in_iterations = uint_max + rnd->Uniform(10000);
-  cf_opt->target_file_size_base = uint_max + rnd->Uniform(10000);
-
-  // unsigned int options
-  cf_opt->rate_limit_delay_max_milliseconds = rnd->Uniform(10000);
-
-  // pointer typed options
-  cf_opt->prefix_extractor.reset(RandomSliceTransform(rnd));
-  cf_opt->table_factory.reset(RandomTableFactory(rnd));
-  cf_opt->merge_operator.reset(RandomMergeOperator(rnd));
-  if (cf_opt->compaction_filter) {
-    delete cf_opt->compaction_filter;
-  }
-  cf_opt->compaction_filter = RandomCompactionFilter(rnd);
-  cf_opt->compaction_filter_factory.reset(RandomCompactionFilterFactory(rnd));
-
-  // custom typed options
-  cf_opt->compression = RandomCompressionType(rnd);
-  RandomCompressionTypeVector(cf_opt->num_levels,
-                              &cf_opt->compression_per_level, rnd);
-}
-
-}  // namespace
-
 TEST_F(OptionsTest, ColumnFamilyOptionsSerialization) {
   ColumnFamilyOptions base_opt, new_opt;
   Random rnd(302);
   // Phase 1: randomly assign base_opt
   // custom type options
-  RandomInitCFOptions(&base_opt, &rnd);
+  test::RandomInitCFOptions(&base_opt, &rnd);
 
   // Phase 2: obtain a string from base_opt
   std::string base_options_file_content;
@@ -972,7 +663,6 @@ TEST_F(OptionsTest, ColumnFamilyOptionsSerialization) {
 }
 
 #endif  // !ROCKSDB_LITE
-
 
 Status StringToMap(
     const std::string& opts_str,
@@ -1163,7 +853,7 @@ TEST_F(OptionsTest, ConvertOptionsTest) {
 
   ASSERT_TRUE(table_factory.get() != nullptr);
 
-  const BlockBasedTableOptions table_opt = table_factory->GetTableOptions();
+  const BlockBasedTableOptions table_opt = table_factory->table_options();
 
   ASSERT_EQ(table_opt.block_cache->GetCapacity(), 8UL << 20);
   ASSERT_EQ(table_opt.block_size, leveldb_opt.block_size);
@@ -1175,10 +865,10 @@ TEST_F(OptionsTest, ConvertOptionsTest) {
 #ifndef ROCKSDB_LITE
 class OptionsParserTest : public testing::Test {
  public:
-  OptionsParserTest() { env_.reset(new StringEnv(Env::Default())); }
+  OptionsParserTest() { env_.reset(new test::StringEnv(Env::Default())); }
 
  protected:
-  std::unique_ptr<StringEnv> env_;
+  std::unique_ptr<test::StringEnv> env_;
 };
 
 TEST_F(OptionsParserTest, Comment) {
@@ -1422,7 +1112,7 @@ void VerifyCFPointerTypedOptions(
 
   // change the name of merge operator back-and-forth
   {
-    auto* merge_operator = dynamic_cast<ChanglingMergeOperator*>(
+    auto* merge_operator = dynamic_cast<test::ChanglingMergeOperator*>(
         base_cf_opt->merge_operator.get());
     if (merge_operator != nullptr) {
       name_buffer = merge_operator->Name();
@@ -1440,7 +1130,7 @@ void VerifyCFPointerTypedOptions(
   // change the name of the compaction filter factory back-and-forth
   {
     auto* compaction_filter_factory =
-        dynamic_cast<ChanglingCompactionFilterFactory*>(
+        dynamic_cast<test::ChanglingCompactionFilterFactory*>(
             base_cf_opt->compaction_filter_factory.get());
     if (compaction_filter_factory != nullptr) {
       name_buffer = compaction_filter_factory->Name();
@@ -1510,17 +1200,17 @@ TEST_F(OptionsParserTest, DumpAndParse) {
                                        "###rocksdb#1-testcf#2###"};
   const int num_cf = static_cast<int>(cf_names.size());
   Random rnd(302);
-  RandomInitDBOptions(&base_db_opt, &rnd);
+  test::RandomInitDBOptions(&base_db_opt, &rnd);
   base_db_opt.db_log_dir += "/#odd #but #could #happen #path #/\\\\#OMG";
   for (int c = 0; c < num_cf; ++c) {
     ColumnFamilyOptions cf_opt;
     Random cf_rnd(0xFB + c);
-    RandomInitCFOptions(&cf_opt, &cf_rnd);
+    test::RandomInitCFOptions(&cf_opt, &cf_rnd);
     if (c < 4) {
-      cf_opt.prefix_extractor.reset(RandomSliceTransform(&rnd, c));
+      cf_opt.prefix_extractor.reset(test::RandomSliceTransform(&rnd, c));
     }
     if (c < 3) {
-      cf_opt.table_factory.reset(RandomTableFactory(&rnd, c));
+      cf_opt.table_factory.reset(test::RandomTableFactory(&rnd, c));
     }
     base_cf_opts.emplace_back(cf_opt);
   }
@@ -1561,6 +1251,151 @@ TEST_F(OptionsParserTest, DumpAndParse) {
   for (int c = 0; c < num_cf; ++c) {
     if (base_cf_opts[c].compaction_filter) {
       delete base_cf_opts[c].compaction_filter;
+    }
+  }
+}
+
+TEST_F(OptionsParserTest, DifferentDefault) {
+  const std::string kOptionsFileName = "test-persisted-options.ini";
+
+  ColumnFamilyOptions cf_level_opts;
+  cf_level_opts.OptimizeLevelStyleCompaction();
+
+  ColumnFamilyOptions cf_univ_opts;
+  cf_univ_opts.OptimizeUniversalStyleCompaction();
+
+  ASSERT_OK(PersistRocksDBOptions(DBOptions(), {"default", "universal"},
+                                  {cf_level_opts, cf_univ_opts},
+                                  kOptionsFileName, env_.get()));
+
+  RocksDBOptionsParser parser;
+  ASSERT_OK(parser.Parse(kOptionsFileName, env_.get()));
+}
+
+class OptionsSanityCheckTest : public OptionsParserTest {
+ public:
+  OptionsSanityCheckTest() {}
+
+ protected:
+  Status SanityCheckCFOptions(const ColumnFamilyOptions& cf_opts,
+                              OptionsSanityCheckLevel level) {
+    return RocksDBOptionsParser::VerifyRocksDBOptionsFromFile(
+        DBOptions(), {"default"}, {cf_opts}, kOptionsFileName, env_.get(),
+        level);
+  }
+
+  Status PersistCFOptions(const ColumnFamilyOptions& cf_opts) {
+    Status s = env_->DeleteFile(kOptionsFileName);
+    if (!s.ok()) {
+      return s;
+    }
+    return PersistRocksDBOptions(DBOptions(), {"default"}, {cf_opts},
+                                 kOptionsFileName, env_.get());
+  }
+
+  const std::string kOptionsFileName = "OPTIONS";
+};
+
+TEST_F(OptionsSanityCheckTest, SanityCheck) {
+  ColumnFamilyOptions opts;
+  Random rnd(301);
+
+  // default ColumnFamilyOptions
+  {
+    ASSERT_OK(PersistCFOptions(opts));
+    ASSERT_OK(SanityCheckCFOptions(opts, kSanityLevelExactMatch));
+  }
+
+  // prefix_extractor
+  {
+    // change the prefix extractor and expect only pass when
+    // sanity-level == kSanityLevelNone
+    opts.prefix_extractor.reset(NewCappedPrefixTransform(10));
+    ASSERT_NOK(SanityCheckCFOptions(opts, kSanityLevelLooselyCompatible));
+    ASSERT_OK(SanityCheckCFOptions(opts, kSanityLevelNone));
+
+    // persist the change
+    ASSERT_OK(PersistCFOptions(opts));
+    ASSERT_OK(SanityCheckCFOptions(opts, kSanityLevelExactMatch));
+
+    // use same prefix extractor but with different parameter
+    opts.prefix_extractor.reset(NewCappedPrefixTransform(15));
+    // expect pass only in kSanityLevelNone
+    ASSERT_NOK(SanityCheckCFOptions(opts, kSanityLevelLooselyCompatible));
+    ASSERT_OK(SanityCheckCFOptions(opts, kSanityLevelNone));
+
+    // repeat the test with FixedPrefixTransform
+    opts.prefix_extractor.reset(NewFixedPrefixTransform(10));
+    ASSERT_NOK(SanityCheckCFOptions(opts, kSanityLevelLooselyCompatible));
+    ASSERT_OK(SanityCheckCFOptions(opts, kSanityLevelNone));
+
+    // persist the change of prefix_extractor
+    ASSERT_OK(PersistCFOptions(opts));
+    ASSERT_OK(SanityCheckCFOptions(opts, kSanityLevelExactMatch));
+
+    // use same prefix extractor but with different parameter
+    opts.prefix_extractor.reset(NewFixedPrefixTransform(15));
+    // expect pass only in kSanityLevelNone
+    ASSERT_NOK(SanityCheckCFOptions(opts, kSanityLevelLooselyCompatible));
+    ASSERT_OK(SanityCheckCFOptions(opts, kSanityLevelNone));
+  }
+
+  // table_factory
+  {
+    for (int tb = 2; tb >= 0; --tb) {
+      // change the table factory
+      opts.table_factory.reset(test::RandomTableFactory(&rnd, tb));
+      ASSERT_NOK(SanityCheckCFOptions(opts, kSanityLevelLooselyCompatible));
+      ASSERT_OK(SanityCheckCFOptions(opts, kSanityLevelNone));
+
+      // persist the change
+      ASSERT_OK(PersistCFOptions(opts));
+      ASSERT_OK(SanityCheckCFOptions(opts, kSanityLevelExactMatch));
+    }
+  }
+
+  // merge_operator
+  {
+    for (int test = 0; test < 5; ++test) {
+      // change the merge operator
+      opts.merge_operator.reset(test::RandomMergeOperator(&rnd));
+      ASSERT_NOK(SanityCheckCFOptions(opts, kSanityLevelLooselyCompatible));
+      ASSERT_OK(SanityCheckCFOptions(opts, kSanityLevelNone));
+
+      // persist the change
+      ASSERT_OK(PersistCFOptions(opts));
+      ASSERT_OK(SanityCheckCFOptions(opts, kSanityLevelExactMatch));
+    }
+  }
+
+  // compaction_filter
+  {
+    for (int test = 0; test < 5; ++test) {
+      // change the compaction filter
+      opts.compaction_filter = test::RandomCompactionFilter(&rnd);
+      ASSERT_NOK(SanityCheckCFOptions(opts, kSanityLevelExactMatch));
+      ASSERT_OK(SanityCheckCFOptions(opts, kSanityLevelLooselyCompatible));
+
+      // persist the change
+      ASSERT_OK(PersistCFOptions(opts));
+      ASSERT_OK(SanityCheckCFOptions(opts, kSanityLevelExactMatch));
+      delete opts.compaction_filter;
+      opts.compaction_filter = nullptr;
+    }
+  }
+
+  // compaction_filter_factory
+  {
+    for (int test = 0; test < 5; ++test) {
+      // change the compaction filter factory
+      opts.compaction_filter_factory.reset(
+          test::RandomCompactionFilterFactory(&rnd));
+      ASSERT_NOK(SanityCheckCFOptions(opts, kSanityLevelExactMatch));
+      ASSERT_OK(SanityCheckCFOptions(opts, kSanityLevelLooselyCompatible));
+
+      // persist the change
+      ASSERT_OK(PersistCFOptions(opts));
+      ASSERT_OK(SanityCheckCFOptions(opts, kSanityLevelExactMatch));
     }
   }
 }
@@ -1640,6 +1475,392 @@ TEST_F(OptionsParserTest, EscapeOptionString) {
             "Escape \\# and");
 }
 
+// Only run the tests to verify new fields in options are settable through
+// string on limited platforms as it depends on behavior of compilers.
+#ifdef OS_LINUX
+#ifndef __clang__
+const char kSpecialChar = 'R';
+typedef std::vector<std::pair<int, size_t>> OffsetGap;
+
+void FillWithSpecialChar(char* start_ptr, size_t total_size,
+                         const OffsetGap& blacklist) {
+  size_t offset = 0;
+  for (auto& pair : blacklist) {
+    std::memset(start_ptr + offset, kSpecialChar, pair.first - offset);
+    offset = pair.first + pair.second;
+  }
+  std::memset(start_ptr + offset, kSpecialChar, total_size - offset);
+}
+
+int NumUnsetBytes(char* start_ptr, size_t total_size,
+                  const OffsetGap& blacklist) {
+  int total_unset_bytes_base = 0;
+  size_t offset = 0;
+  for (auto& pair : blacklist) {
+    for (char* ptr = start_ptr + offset; ptr < start_ptr + pair.first; ptr++) {
+      if (*ptr == kSpecialChar) {
+        total_unset_bytes_base++;
+      }
+      offset = pair.first + pair.second;
+    }
+  }
+  for (char* ptr = start_ptr + offset; ptr < start_ptr + total_size; ptr++) {
+    if (*ptr == kSpecialChar) {
+      total_unset_bytes_base++;
+    }
+  }
+  return total_unset_bytes_base;
+}
+
+// If the test fails, likely a new option is added to BlockBasedTableOptions
+// but it cannot be set through GetBlockBasedTableOptionsFromString(), or the
+// test is not updated accordingly.
+// After adding an option, we need to make sure it is settable by
+// GetBlockBasedTableOptionsFromString() and add the option to the input string
+// passed to the GetBlockBasedTableOptionsFromString() in this test.
+// If it is a complicated type, you also need to add the field to
+// kBbtoBlacklist, and maybe add customized verification for it.
+TEST_F(OptionsParserTest, BlockBasedTableOptionsAllFieldsSettable) {
+  // Items in the form of <offset, size>. Need to be in ascending order
+  // and not overlapping. Need to updated if new pointer-option is added.
+  const OffsetGap kBbtoBlacklist = {
+      {offsetof(struct BlockBasedTableOptions, flush_block_policy_factory),
+       sizeof(std::shared_ptr<FlushBlockPolicyFactory>)},
+      {offsetof(struct BlockBasedTableOptions, block_cache),
+       sizeof(std::shared_ptr<Cache>)},
+      {offsetof(struct BlockBasedTableOptions, block_cache_compressed),
+       sizeof(std::shared_ptr<Cache>)},
+      {offsetof(struct BlockBasedTableOptions, filter_policy),
+       sizeof(std::shared_ptr<const FilterPolicy>)},
+  };
+
+  // In this test, we catch a new option of BlockBasedTableOptions that is not
+  // settable through GetBlockBasedTableOptionsFromString().
+  // We count padding bytes of the option struct, and assert it to be the same
+  // as unset bytes of an option struct initialized by
+  // GetBlockBasedTableOptionsFromString().
+
+  char* bbto_ptr = new char[sizeof(BlockBasedTableOptions)];
+
+  // Count padding bytes by setting all bytes in the memory to a special char,
+  // copy a well constructed struct to this memory and see how many special
+  // bytes left.
+  BlockBasedTableOptions* bbto = new (bbto_ptr) BlockBasedTableOptions();
+  FillWithSpecialChar(bbto_ptr, sizeof(BlockBasedTableOptions), kBbtoBlacklist);
+  // It based on the behavior of compiler that padding bytes are not changed
+  // when copying the struct. It's prone to failure when compiler behavior
+  // changes. We verify there is unset bytes to detect the case.
+  *bbto = BlockBasedTableOptions();
+  int unset_bytes_base =
+      NumUnsetBytes(bbto_ptr, sizeof(BlockBasedTableOptions), kBbtoBlacklist);
+  ASSERT_GT(unset_bytes_base, 0);
+  bbto->~BlockBasedTableOptions();
+
+  // Construct the base option passed into
+  // GetBlockBasedTableOptionsFromString().
+  bbto = new (bbto_ptr) BlockBasedTableOptions();
+  FillWithSpecialChar(bbto_ptr, sizeof(BlockBasedTableOptions), kBbtoBlacklist);
+  // This option is not setable:
+  bbto->use_delta_encoding = true;
+
+  char* new_bbto_ptr = new char[sizeof(BlockBasedTableOptions)];
+  BlockBasedTableOptions* new_bbto =
+      new (new_bbto_ptr) BlockBasedTableOptions();
+  FillWithSpecialChar(new_bbto_ptr, sizeof(BlockBasedTableOptions),
+                      kBbtoBlacklist);
+
+  // Need to update the option string if a new option is added.
+  ASSERT_OK(GetBlockBasedTableOptionsFromString(
+      *bbto,
+      "cache_index_and_filter_blocks=1;index_type=kHashSearch;"
+      "checksum=kxxHash;hash_index_allow_collision=1;no_block_cache=1;"
+      "block_cache=1M;block_cache_compressed=1k;block_size=1024;"
+      "block_size_deviation=8;block_restart_interval=4; "
+      "index_block_restart_interval=4;"
+      "filter_policy=bloomfilter:4:true;whole_key_filtering=1;"
+      "skip_table_builder_flush=1;format_version=1;"
+      "hash_index_allow_collision=false;",
+      new_bbto));
+
+  ASSERT_EQ(unset_bytes_base,
+            NumUnsetBytes(new_bbto_ptr, sizeof(BlockBasedTableOptions),
+                          kBbtoBlacklist));
+
+  ASSERT_TRUE(new_bbto->block_cache.get() != nullptr);
+  ASSERT_TRUE(new_bbto->block_cache_compressed.get() != nullptr);
+  ASSERT_TRUE(new_bbto->filter_policy.get() != nullptr);
+
+  bbto->~BlockBasedTableOptions();
+  new_bbto->~BlockBasedTableOptions();
+
+  delete[] bbto_ptr;
+  delete[] new_bbto_ptr;
+}
+
+// If the test fails, likely a new option is added to DBOptions
+// but it cannot be set through GetDBOptionsFromString(), or the test is not
+// updated accordingly.
+// After adding an option, we need to make sure it is settable by
+// GetDBOptionsFromString() and add the option to the input string passed to
+// DBOptionsFromString()in this test.
+// If it is a complicated type, you also need to add the field to
+// kDBOptionsBlacklist, and maybe add customized verification for it.
+TEST_F(OptionsParserTest, DBOptionsAllFieldsSettable) {
+  const OffsetGap kDBOptionsBlacklist = {
+      {offsetof(struct DBOptions, env), sizeof(Env*)},
+      {offsetof(struct DBOptions, rate_limiter),
+       sizeof(std::shared_ptr<RateLimiter>)},
+      {offsetof(struct DBOptions, sst_file_manager),
+       sizeof(std::shared_ptr<SstFileManager>)},
+      {offsetof(struct DBOptions, info_log), sizeof(std::shared_ptr<Logger>)},
+      {offsetof(struct DBOptions, statistics),
+       sizeof(std::shared_ptr<Statistics>)},
+      {offsetof(struct DBOptions, db_paths), sizeof(std::vector<DbPath>)},
+      {offsetof(struct DBOptions, db_log_dir), sizeof(std::string)},
+      {offsetof(struct DBOptions, wal_dir), sizeof(std::string)},
+      {offsetof(struct DBOptions, listeners),
+       sizeof(std::vector<std::shared_ptr<EventListener>>)},
+      {offsetof(struct DBOptions, row_cache), sizeof(std::shared_ptr<Cache>)},
+      {offsetof(struct DBOptions, wal_filter), sizeof(const WalFilter*)},
+  };
+
+  char* options_ptr = new char[sizeof(DBOptions)];
+
+  // Count padding bytes by setting all bytes in the memory to a special char,
+  // copy a well constructed struct to this memory and see how many special
+  // bytes left.
+  DBOptions* options = new (options_ptr) DBOptions();
+  FillWithSpecialChar(options_ptr, sizeof(DBOptions), kDBOptionsBlacklist);
+  // It based on the behavior of compiler that padding bytes are not changed
+  // when copying the struct. It's prone to failure when compiler behavior
+  // changes. We verify there is unset bytes to detect the case.
+  *options = DBOptions();
+  int unset_bytes_base =
+      NumUnsetBytes(options_ptr, sizeof(DBOptions), kDBOptionsBlacklist);
+  ASSERT_GT(unset_bytes_base, 0);
+  options->~DBOptions();
+
+  options = new (options_ptr) DBOptions();
+  FillWithSpecialChar(options_ptr, sizeof(DBOptions), kDBOptionsBlacklist);
+
+  // Following options are not settable through GetDBOptionsFromString():
+  options->fail_if_options_file_error = false;
+  options->allow_concurrent_memtable_write = false;
+  options->wal_recovery_mode = WALRecoveryMode::kPointInTimeRecovery;
+  options->enable_write_thread_adaptive_yield = true;
+  options->write_thread_slow_yield_usec = true;
+  options->write_thread_max_yield_usec = 1000u;
+  options->access_hint_on_compaction_start = DBOptions::AccessHint::NONE;
+  options->info_log_level = InfoLogLevel::DEBUG_LEVEL;
+
+  char* new_options_ptr = new char[sizeof(DBOptions)];
+  DBOptions* new_options = new (new_options_ptr) DBOptions();
+  FillWithSpecialChar(new_options_ptr, sizeof(DBOptions), kDBOptionsBlacklist);
+
+  // Need to update the option string if a new option is added.
+  ASSERT_OK(
+      GetDBOptionsFromString(*options,
+                             "wal_bytes_per_sync=4295048118;"
+                             "delete_obsolete_files_period_micros=4294967758;"
+                             "WAL_ttl_seconds=4295008036;"
+                             "WAL_size_limit_MB=4295036161;"
+                             "wal_dir=path/to/wal_dir;"
+                             "db_write_buffer_size=2587;"
+                             "max_subcompactions=64330;"
+                             "table_cache_numshardbits=28;"
+                             "max_open_files=72;"
+                             "max_file_opening_threads=35;"
+                             "base_background_compactions=3;"
+                             "max_background_compactions=33;"
+                             "use_fsync=true;"
+                             "use_adaptive_mutex=false;"
+                             "max_total_wal_size=4295005604;"
+                             "compaction_readahead_size=0;"
+                             "new_table_reader_for_compaction_inputs=false;"
+                             "keep_log_file_num=4890;"
+                             "skip_stats_update_on_db_open=false;"
+                             "max_manifest_file_size=4295009941;"
+                             "db_log_dir=path/to/db_log_dir;"
+                             "skip_log_error_on_recovery=true;"
+                             "writable_file_max_buffer_size=1048576;"
+                             "paranoid_checks=true;"
+                             "is_fd_close_on_exec=false;"
+                             "bytes_per_sync=4295013613;"
+                             "enable_thread_tracking=false;"
+                             "disable_data_sync=false;"
+                             "recycle_log_file_num=0;"
+                             "disableDataSync=false;"
+                             "create_missing_column_families=true;"
+                             "log_file_time_to_roll=3097;"
+                             "max_background_flushes=35;"
+                             "create_if_missing=false;"
+                             "error_if_exists=true;"
+                             "allow_os_buffer=false;"
+                             "delayed_write_rate=4294976214;"
+                             "manifest_preallocation_size=1222;"
+                             "allow_mmap_writes=false;"
+                             "stats_dump_period_sec=70127;"
+                             "allow_fallocate=true;"
+                             "allow_mmap_reads=false;"
+                             "max_log_file_size=4607;"
+                             "random_access_max_buffer_size=1048576;"
+                             "advise_random_on_open=true;",
+                             new_options));
+
+  ASSERT_EQ(unset_bytes_base, NumUnsetBytes(new_options_ptr, sizeof(DBOptions),
+                                            kDBOptionsBlacklist));
+
+  options->~DBOptions();
+  new_options->~DBOptions();
+
+  delete[] options_ptr;
+  delete[] new_options_ptr;
+}
+
+// If the test fails, likely a new option is added to ColumnFamilyOptions
+// but it cannot be set through GetColumnFamilyOptionsFromString(), or the
+// test is not updated accordingly.
+// After adding an option, we need to make sure it is settable by
+// GetColumnFamilyOptionsFromString() and add the option to the input
+// string passed to GetColumnFamilyOptionsFromString()in this test.
+// If it is a complicated type, you also need to add the field to
+// kColumnFamilyOptionsBlacklist, and maybe add customized verification
+// for it.
+TEST_F(OptionsParserTest, ColumnFamilyOptionsAllFieldsSettable) {
+  const OffsetGap kColumnFamilyOptionsBlacklist = {
+      {offsetof(struct ColumnFamilyOptions, comparator), sizeof(Comparator*)},
+      {offsetof(struct ColumnFamilyOptions, merge_operator),
+       sizeof(std::shared_ptr<MergeOperator>)},
+      {offsetof(struct ColumnFamilyOptions, compaction_filter),
+       sizeof(const CompactionFilter*)},
+      {offsetof(struct ColumnFamilyOptions, compaction_filter_factory),
+       sizeof(std::shared_ptr<CompactionFilterFactory>)},
+      {offsetof(struct ColumnFamilyOptions, compression_per_level),
+       sizeof(std::vector<CompressionType>)},
+      {offsetof(struct ColumnFamilyOptions, prefix_extractor),
+       sizeof(std::shared_ptr<const SliceTransform>)},
+      {offsetof(struct ColumnFamilyOptions,
+                max_bytes_for_level_multiplier_additional),
+       sizeof(std::vector<int>)},
+      {offsetof(struct ColumnFamilyOptions, memtable_factory),
+       sizeof(std::shared_ptr<MemTableRepFactory>)},
+      {offsetof(struct ColumnFamilyOptions, table_factory),
+       sizeof(std::shared_ptr<TableFactory>)},
+      {offsetof(struct ColumnFamilyOptions,
+                table_properties_collector_factories),
+       sizeof(ColumnFamilyOptions::TablePropertiesCollectorFactories)},
+      {offsetof(struct ColumnFamilyOptions, inplace_callback),
+       sizeof(UpdateStatus (*)(char*, uint32_t*, Slice, std::string*))},
+  };
+
+  char* options_ptr = new char[sizeof(ColumnFamilyOptions)];
+
+  // Count padding bytes by setting all bytes in the memory to a special char,
+  // copy a well constructed struct to this memory and see how many special
+  // bytes left.
+  ColumnFamilyOptions* options = new (options_ptr) ColumnFamilyOptions();
+  FillWithSpecialChar(options_ptr, sizeof(ColumnFamilyOptions),
+                      kColumnFamilyOptionsBlacklist);
+  // It based on the behavior of compiler that padding bytes are not changed
+  // when copying the struct. It's prone to failure when compiler behavior
+  // changes. We verify there is unset bytes to detect the case.
+  *options = ColumnFamilyOptions();
+
+  // Deprecatd option which is not initialized. Need to set it to avoid
+  // Valgrind error
+  options->max_mem_compaction_level = 0;
+
+  int unset_bytes_base = NumUnsetBytes(options_ptr, sizeof(ColumnFamilyOptions),
+                                       kColumnFamilyOptionsBlacklist);
+  ASSERT_GT(unset_bytes_base, 0);
+  options->~ColumnFamilyOptions();
+
+  options = new (options_ptr) ColumnFamilyOptions();
+  FillWithSpecialChar(options_ptr, sizeof(ColumnFamilyOptions),
+                      kColumnFamilyOptionsBlacklist);
+
+  // Following options are not settable through
+  // GetColumnFamilyOptionsFromString():
+  options->rate_limit_delay_max_milliseconds = 33;
+  options->compaction_pri = CompactionPri::kOldestSmallestSeqFirst;
+  options->compaction_options_universal = CompactionOptionsUniversal();
+  options->compression_opts = CompressionOptions();
+  options->hard_rate_limit = 0;
+  options->soft_rate_limit = 0;
+  options->compaction_options_fifo = CompactionOptionsFIFO();
+  options->max_mem_compaction_level = 0;
+
+  char* new_options_ptr = new char[sizeof(ColumnFamilyOptions)];
+  ColumnFamilyOptions* new_options =
+      new (new_options_ptr) ColumnFamilyOptions();
+  FillWithSpecialChar(new_options_ptr, sizeof(ColumnFamilyOptions),
+                      kColumnFamilyOptionsBlacklist);
+
+  // Need to update the option string if a new option is added.
+  ASSERT_OK(GetColumnFamilyOptionsFromString(
+      *options,
+      "compaction_filter_factory=mpudlojcujCompactionFilterFactory;"
+      "table_factory=PlainTable;"
+      "prefix_extractor=rocksdb.CappedPrefix.13;"
+      "comparator=leveldb.BytewiseComparator;"
+      "compression_per_level=kBZip2Compression:kBZip2Compression:"
+      "kBZip2Compression:kNoCompression:kZlibCompression:kBZip2Compression:"
+      "kSnappyCompression;"
+      "max_bytes_for_level_base=986;"
+      "bloom_locality=8016;"
+      "target_file_size_base=4294976376;"
+      "memtable_prefix_bloom_huge_page_tlb_size=2557;"
+      "max_successive_merges=5497;"
+      "max_sequential_skip_in_iterations=4294971408;"
+      "arena_block_size=1893;"
+      "target_file_size_multiplier=35;"
+      "source_compaction_factor=54;"
+      "min_write_buffer_number_to_merge=9;"
+      "max_write_buffer_number=84;"
+      "write_buffer_size=1653;"
+      "max_grandparent_overlap_factor=64;"
+      "max_bytes_for_level_multiplier=60;"
+      "memtable_factory=SkipListFactory;"
+      "compression=kNoCompression;"
+      "min_partial_merge_operands=7576;"
+      "level0_stop_writes_trigger=33;"
+      "num_levels=99;"
+      "level0_slowdown_writes_trigger=22;"
+      "level0_file_num_compaction_trigger=14;"
+      "expanded_compaction_factor=34;"
+      "compaction_filter=urxcqstuwnCompactionFilter;"
+      "soft_rate_limit=530.615385;"
+      "soft_pending_compaction_bytes_limit=0;"
+      "max_write_buffer_number_to_maintain=84;"
+      "verify_checksums_in_compaction=false;"
+      "merge_operator=aabcxehazrMergeOperator;"
+      "memtable_prefix_bloom_bits=4642;"
+      "paranoid_file_checks=true;"
+      "inplace_update_num_locks=7429;"
+      "optimize_filters_for_hits=false;"
+      "level_compaction_dynamic_level_bytes=false;"
+      "inplace_update_support=false;"
+      "compaction_style=kCompactionStyleFIFO;"
+      "memtable_prefix_bloom_probes=2511;"
+      "purge_redundant_kvs_while_flush=true;"
+      "filter_deletes=false;"
+      "hard_pending_compaction_bytes_limit=0;"
+      "disable_auto_compactions=false;"
+      "compaction_measure_io_stats=true;",
+      new_options));
+
+  ASSERT_EQ(unset_bytes_base,
+            NumUnsetBytes(new_options_ptr, sizeof(ColumnFamilyOptions),
+                          kColumnFamilyOptionsBlacklist));
+
+  options->~ColumnFamilyOptions();
+  new_options->~ColumnFamilyOptions();
+
+  delete[] options_ptr;
+  delete[] new_options_ptr;
+}
+#endif  // !__clang__
+#endif  // OS_LINUX
 #endif  // !ROCKSDB_LITE
 
 }  // namespace rocksdb

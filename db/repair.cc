@@ -81,8 +81,8 @@
 #include "rocksdb/env.h"
 #include "rocksdb/options.h"
 #include "rocksdb/immutable_options.h"
+#include "table/scoped_arena_iterator.h"
 #include "util/file_reader_writer.h"
-#include "util/scoped_arena_iterator.h"
 
 namespace rocksdb {
 
@@ -165,7 +165,7 @@ class Repairer {
   Status FindFiles() {
     std::vector<std::string> filenames;
     bool found_file = false;
-    for (uint32_t path_id = 0; path_id < options_.db_paths.size(); path_id++) {
+    for (size_t path_id = 0; path_id < options_.db_paths.size(); path_id++) {
       Status status =
           env_->GetChildren(options_.db_paths[path_id].path, &filenames);
       if (!status.ok()) {
@@ -190,7 +190,8 @@ class Repairer {
               assert(path_id == 0);
               logs_.push_back(number);
             } else if (type == kTableFile) {
-              table_fds_.emplace_back(number, path_id, 0);
+              table_fds_.emplace_back(number, static_cast<uint32_t>(path_id),
+                                      0);
             } else {
               // Ignore other files
             }
@@ -249,8 +250,8 @@ class Repairer {
     // corruptions cause entire commits to be skipped instead of
     // propagating bad information (like overly large sequence
     // numbers).
-    log::Reader reader(std::move(lfile_reader), &reporter,
-                       true /*enable checksum*/, 0 /*initial_offset*/);
+    log::Reader reader(options_.info_log, std::move(lfile_reader), &reporter,
+                       true /*enable checksum*/, 0 /*initial_offset*/, log);
 
     // Read all the records and add to a memtable
     std::string scratch;
@@ -270,7 +271,7 @@ class Repairer {
         continue;
       }
       WriteBatchInternal::SetContents(&batch, record);
-      status = WriteBatchInternal::InsertInto(&batch, cf_mems_default);
+      status = WriteBatchInternal::InsertInto(&batch, cf_mems_default, nullptr);
       if (status.ok()) {
         counter += WriteBatchInternal::Count(&batch);
       } else {
@@ -290,10 +291,12 @@ class Repairer {
       ro.total_order_seek = true;
       Arena arena;
       ScopedArenaIterator iter(mem->NewIterator(ro, &arena));
-      status = BuildTable(dbname_, env_, ioptions_, env_options_, table_cache_,
-                          iter.get(), &meta, icmp_,
-                          &int_tbl_prop_collector_factories_, {},
-                          kNoCompression, CompressionOptions(), false, nullptr);
+      status = BuildTable(
+          dbname_, env_, ioptions_, env_options_, table_cache_, iter.get(),
+          &meta, icmp_, &int_tbl_prop_collector_factories_,
+          TablePropertiesCollectorFactory::Context::kUnknownColumnFamily, {},
+          kMaxSequenceNumber, kNoCompression, CompressionOptions(), false,
+          nullptr);
     }
     delete mem->Unref();
     delete cf_mems_default;
@@ -339,7 +342,7 @@ class Repairer {
     t->meta.fd = FileDescriptor(t->meta.fd.GetNumber(), t->meta.fd.GetPathId(),
                                 file_size);
     if (status.ok()) {
-      Iterator* iter = table_cache_->NewIterator(
+      InternalIterator* iter = table_cache_->NewIterator(
           ReadOptions(), env_options_, icmp_, t->meta.fd);
       bool empty = true;
       ParsedInternalKey parsed;
@@ -412,7 +415,7 @@ class Repairer {
     {
       unique_ptr<WritableFileWriter> file_writer(
           new WritableFileWriter(std::move(file), env_options));
-      log::Writer log(std::move(file_writer));
+      log::Writer log(std::move(file_writer), 0, false);
       std::string record;
       edit_->EncodeTo(&record);
       status = log.AddRecord(record);

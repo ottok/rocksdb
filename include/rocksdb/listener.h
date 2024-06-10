@@ -4,13 +4,18 @@
 
 #pragma once
 
+#include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include "rocksdb/compaction_job_stats.h"
 #include "rocksdb/status.h"
 #include "rocksdb/table_properties.h"
 
 namespace rocksdb {
+
+typedef std::unordered_map<std::string, std::shared_ptr<const TableProperties>>
+    TablePropertiesCollection;
 
 class DB;
 class Status;
@@ -35,6 +40,25 @@ struct TableFileCreationInfo {
   TableProperties table_properties;
 };
 
+enum class CompactionReason {
+  kUnknown,
+  // [Level] number of L0 files > level0_file_num_compaction_trigger
+  kLevelL0FilesNum,
+  // [Level] total size of level > MaxBytesForLevel()
+  kLevelMaxLevelSize,
+  // [Universal] Compacting for size amplification
+  kUniversalSizeAmplification,
+  // [Universal] Compacting for size ratio
+  kUniversalSizeRatio,
+  // [Universal] number of sorted runs > level0_file_num_compaction_trigger
+  kUniversalSortedRunNum,
+  // [FIFO] total size > max_table_files_size
+  kFIFOMaxSize,
+  // Manual compaction
+  kManualCompaction,
+  // DB::SuggestCompactRange() marked files for compaction
+  kFilesMarkedForCompaction,
+};
 
 #ifndef ROCKSDB_LITE
 
@@ -45,7 +69,7 @@ struct TableFileDeletionInfo {
   std::string file_path;
   // The id of the job which deleted the file.
   int job_id;
-  // The status indicating whether the deletion was successfull or not.
+  // The status indicating whether the deletion was successful or not.
   Status status;
 };
 
@@ -72,6 +96,8 @@ struct FlushJobInfo {
   SequenceNumber smallest_seqno;
   // The largest sequence number in the newly created file
   SequenceNumber largest_seqno;
+  // Table properties of the table being flushed
+  TableProperties table_properties;
 };
 
 struct CompactionJobInfo {
@@ -93,8 +119,16 @@ struct CompactionJobInfo {
   int output_level;
   // the names of the compaction input files.
   std::vector<std::string> input_files;
+
   // the names of the compaction output files.
   std::vector<std::string> output_files;
+  // Table properties for input and output tables.
+  // The map is keyed by values from input_files and output_files.
+  TablePropertiesCollection table_properties;
+
+  // Reason to run the compaction
+  CompactionReason compaction_reason;
+
   // If non-null, this variable stores detailed information
   // about this compaction.
   CompactionJobStats stats;
@@ -138,8 +172,8 @@ class EventListener {
   // Note that the this function must be implemented in a way such that
   // it should not run for an extended period of time before the function
   // returns.  Otherwise, RocksDB may be blocked.
-  virtual void OnFlushCompleted(
-      DB* db, const FlushJobInfo& flush_job_info) {}
+  virtual void OnFlushCompleted(DB* /*db*/,
+                                const FlushJobInfo& /*flush_job_info*/) {}
 
   // A call-back function for RocksDB which will be called whenever
   // a SST file is deleted.  Different from OnCompactionCompleted and
@@ -152,8 +186,7 @@ class EventListener {
   // Note that if applications would like to use the passed reference
   // outside this function call, they should make copies from the
   // returned value.
-  virtual void OnTableFileDeleted(
-      const TableFileDeletionInfo& info) {}
+  virtual void OnTableFileDeleted(const TableFileDeletionInfo& /*info*/) {}
 
   // A call-back function for RocksDB which will be called whenever
   // a registered RocksDB compacts a file. The default implementation
@@ -168,7 +201,8 @@ class EventListener {
   // @param ci a reference to a CompactionJobInfo struct. 'ci' is released
   //  after this function is returned, and must be copied if it is needed
   //  outside of this function.
-  virtual void OnCompactionCompleted(DB *db, const CompactionJobInfo& ci) {}
+  virtual void OnCompactionCompleted(DB* /*db*/,
+                                     const CompactionJobInfo& /*ci*/) {}
 
   // A call-back function for RocksDB which will be called whenever
   // a SST file is created.  Different from OnCompactionCompleted and
@@ -181,8 +215,7 @@ class EventListener {
   // Note that if applications would like to use the passed reference
   // outside this function call, they should make copies from these
   // returned value.
-  virtual void OnTableFileCreated(
-      const TableFileCreationInfo& info) {}
+  virtual void OnTableFileCreated(const TableFileCreationInfo& /*info*/) {}
 
   virtual ~EventListener() {}
 };

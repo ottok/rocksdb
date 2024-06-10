@@ -19,10 +19,9 @@
 namespace rocksdb {
 
 namespace {
-bool SamePrefix(const SliceTransform* prefix_extractor,
-                const Slice& key1, const Slice& key2) {
-  if (!prefix_extractor->InDomain(key1) &&
-      !prefix_extractor->InDomain(key2)) {
+bool SamePrefix(const SliceTransform* prefix_extractor, const Slice& key1,
+                const Slice& key2) {
+  if (!prefix_extractor->InDomain(key1) && !prefix_extractor->InDomain(key2)) {
     return true;
   } else if (!prefix_extractor->InDomain(key1) ||
              !prefix_extractor->InDomain(key2)) {

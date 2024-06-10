@@ -57,7 +57,8 @@ class SstFileWriter::SstFileWriterPropertiesCollectorFactory
   explicit SstFileWriterPropertiesCollectorFactory(int32_t version)
       : version_(version) {}
 
-  virtual IntTblPropCollector* CreateIntTblPropCollector() override {
+  virtual IntTblPropCollector* CreateIntTblPropCollector(
+      uint32_t column_family_id) override {
     return new SstFileWriterPropertiesCollector(version_);
   }
 
@@ -117,7 +118,9 @@ Status SstFileWriter::Open(const std::string& file_path) {
   r->file_writer.reset(
       new WritableFileWriter(std::move(sst_file), r->env_options));
   r->builder.reset(r->ioptions.table_factory->NewTableBuilder(
-      table_builder_options, r->file_writer.get()));
+      table_builder_options,
+      TablePropertiesCollectorFactory::Context::kUnknownColumnFamily,
+      r->file_writer.get()));
 
   r->file_info.file_path = file_path;
   r->file_info.file_size = 0;
@@ -159,6 +162,9 @@ Status SstFileWriter::Finish(ExternalSstFileInfo* file_info) {
   Rep* r = rep_;
   if (!r->builder) {
     return Status::InvalidArgument("File is not opened");
+  }
+  if (r->file_info.num_entries == 0) {
+    return Status::InvalidArgument("Cannot create sst file with no entries");
   }
 
   Status s = r->builder->Finish();

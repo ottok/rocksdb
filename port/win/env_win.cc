@@ -61,12 +61,6 @@ ThreadStatusUpdater* CreateThreadStatusUpdater() {
   return new ThreadStatusUpdater();
 }
 
-// A wrapper for fadvise, if the platform doesn't support fadvise,
-// it will simply return Status::NotSupport.
-int Fadvise(int fd, off_t offset, size_t len, int advice) {
-  return 0;  // simply do nothing.
-}
-
 inline Status IOErrorFromWindowsError(const std::string& context, DWORD err) {
   return Status::IOError(context, GetWindowsErrSz(err));
 }
@@ -107,6 +101,7 @@ typedef std::unique_ptr<void, decltype(CloseHandleFunc)> UniqueCloseHandlePtr;
 // rely on the current file offset.
 SSIZE_T pwrite(HANDLE hFile, const char* src, size_t numBytes,
                uint64_t offset) {
+  assert(numBytes <= std::numeric_limits<DWORD>::max());
   OVERLAPPED overlapped = {0};
   ULARGE_INTEGER offsetUnion;
   offsetUnion.QuadPart = offset;
@@ -118,7 +113,8 @@ SSIZE_T pwrite(HANDLE hFile, const char* src, size_t numBytes,
 
   unsigned long bytesWritten = 0;
 
-  if (FALSE == WriteFile(hFile, src, numBytes, &bytesWritten, &overlapped)) {
+  if (FALSE == WriteFile(hFile, src, static_cast<DWORD>(numBytes), &bytesWritten,
+    &overlapped)) {
     result = -1;
   } else {
     result = bytesWritten;
@@ -129,6 +125,7 @@ SSIZE_T pwrite(HANDLE hFile, const char* src, size_t numBytes,
 
 // See comments for pwrite above
 SSIZE_T pread(HANDLE hFile, char* src, size_t numBytes, uint64_t offset) {
+  assert(numBytes <= std::numeric_limits<DWORD>::max());
   OVERLAPPED overlapped = {0};
   ULARGE_INTEGER offsetUnion;
   offsetUnion.QuadPart = offset;
@@ -140,7 +137,8 @@ SSIZE_T pread(HANDLE hFile, char* src, size_t numBytes, uint64_t offset) {
 
   unsigned long bytesRead = 0;
 
-  if (FALSE == ReadFile(hFile, src, numBytes, &bytesRead, &overlapped)) {
+  if (FALSE == ReadFile(hFile, src, static_cast<DWORD>(numBytes), &bytesRead,
+    &overlapped)) {
     return -1;
   } else {
     result = bytesRead;
@@ -605,7 +603,7 @@ class WinMmapFile : public WritableFile {
     return Status::OK();
   }
 
-  virtual Status Allocate(off_t offset, off_t len) override {
+  virtual Status Allocate(uint64_t offset, uint64_t len) override {
     return Status::OK();
   }
 };
@@ -616,7 +614,7 @@ class WinSequentialFile : public SequentialFile {
   HANDLE file_;
 
   // There is no equivalent of advising away buffered pages as in posix.
-  // To implement this flag we would need to do unbuffered reads which 
+  // To implement this flag we would need to do unbuffered reads which
   // will need to be aligned (not sure there is a guarantee that the buffer
   // passed in is aligned).
   // Hence we currently ignore this flag. It is used only in a few cases
@@ -688,10 +686,97 @@ class WinRandomAccessFile : public RandomAccessFile {
   const std::string filename_;
   HANDLE hFile_;
   const bool use_os_buffer_;
+  bool read_ahead_;
+  const size_t compaction_readahead_size_;
+  const size_t random_access_max_buffer_size_;
   mutable std::mutex buffer_mut_;
   mutable AlignedBuffer buffer_;
   mutable uint64_t
       buffered_start_;  // file offset set that is currently buffered
+
+  /*
+   * The function reads a requested amount of bytes into the specified aligned
+   * buffer Upon success the function sets the length of the buffer to the
+   * amount of bytes actually read even though it might be less than actually
+   * requested. It then copies the amount of bytes requested by the user (left)
+   * to the user supplied buffer (dest) and reduces left by the amount of bytes
+   * copied to the user buffer
+   *
+   * @user_offset [in] - offset on disk where the read was requested by the user
+   * @first_page_start [in] - actual page aligned disk offset that we want to
+   *                          read from
+   * @bytes_to_read [in] - total amount of bytes that will be read from disk
+   *                       which is generally greater or equal to the amount
+   *                       that the user has requested due to the
+   *                       either alignment requirements or read_ahead in
+   *                       effect.
+   * @left [in/out] total amount of bytes that needs to be copied to the user
+   *                buffer. It is reduced by the amount of bytes that actually
+   *                copied
+   * @buffer - buffer to use
+   * @dest - user supplied buffer
+  */
+  SSIZE_T ReadIntoBuffer(uint64_t user_offset, uint64_t first_page_start,
+                         size_t bytes_to_read, size_t& left,
+                         AlignedBuffer& buffer, char* dest) const {
+    assert(buffer.CurrentSize() == 0);
+    assert(buffer.Capacity() >= bytes_to_read);
+
+    SSIZE_T read =
+        pread(hFile_, buffer.Destination(), bytes_to_read, first_page_start);
+
+    if (read > 0) {
+      buffer.Size(read);
+
+      // Let's figure out how much we read from the users standpoint
+      if ((first_page_start + buffer.CurrentSize()) > user_offset) {
+        assert(first_page_start <= user_offset);
+        size_t buffer_offset = user_offset - first_page_start;
+        read = buffer.Read(dest, buffer_offset, left);
+      } else {
+        read = 0;
+      }
+      left -= read;
+    }
+    return read;
+  }
+
+  SSIZE_T ReadIntoOneShotBuffer(uint64_t user_offset, uint64_t first_page_start,
+                                size_t bytes_to_read, size_t& left,
+                                char* dest) const {
+    AlignedBuffer bigBuffer;
+    bigBuffer.Alignment(buffer_.Alignment());
+    bigBuffer.AllocateNewBuffer(bytes_to_read);
+
+    return ReadIntoBuffer(user_offset, first_page_start, bytes_to_read, left,
+                          bigBuffer, dest);
+  }
+
+  SSIZE_T ReadIntoInstanceBuffer(uint64_t user_offset,
+                                 uint64_t first_page_start,
+                                 size_t bytes_to_read, size_t& left,
+                                 char* dest) const {
+    SSIZE_T read = ReadIntoBuffer(user_offset, first_page_start, bytes_to_read,
+                                  left, buffer_, dest);
+
+    if (read > 0) {
+      buffered_start_ = first_page_start;
+    }
+
+    return read;
+  }
+
+  void CalculateReadParameters(uint64_t offset, size_t bytes_requested,
+                                size_t& actual_bytes_toread,
+                                uint64_t& first_page_start) const {
+
+    const size_t alignment = buffer_.Alignment();
+
+    first_page_start = TruncateToPageBoundary(alignment, offset);
+    const uint64_t last_page_start =
+      TruncateToPageBoundary(alignment, offset + bytes_requested - 1);
+    actual_bytes_toread = (last_page_start - first_page_start) + alignment;
+  }
 
  public:
   WinRandomAccessFile(const std::string& fname, HANDLE hFile, size_t alignment,
@@ -699,17 +784,18 @@ class WinRandomAccessFile : public RandomAccessFile {
       : filename_(fname),
         hFile_(hFile),
         use_os_buffer_(options.use_os_buffer),
+        read_ahead_(false),
+        compaction_readahead_size_(options.compaction_readahead_size),
+        random_access_max_buffer_size_(options.random_access_max_buffer_size),
         buffer_(),
         buffered_start_(0) {
     assert(!options.use_mmap_reads);
 
     // Unbuffered access, use internal buffer for reads
     if (!use_os_buffer_) {
+      // Do not allocate the buffer either until the first request or
+      // until there is a call to allocate a read-ahead buffer
       buffer_.Alignment(alignment);
-      // Random read, no need in a big buffer
-      // We read things in database blocks which are likely to be similar to
-      // the alignment we use.
-      buffer_.AllocateNewBuffer(alignment * 2);
     }
   }
 
@@ -719,70 +805,93 @@ class WinRandomAccessFile : public RandomAccessFile {
     }
   }
 
+  virtual void EnableReadAhead() override { this->Hint(SEQUENTIAL); }
+
   virtual Status Read(uint64_t offset, size_t n, Slice* result,
                       char* scratch) const override {
+
     Status s;
     SSIZE_T r = -1;
     size_t left = n;
     char* dest = scratch;
 
+    if (n == 0) {
+      *result = Slice(scratch, 0);
+      return s;
+    }
+
     // When in unbuffered mode we need to do the following changes:
     // - use our own aligned buffer
     // - always read at the offset of that is a multiple of alignment
     if (!use_os_buffer_) {
-      std::lock_guard<std::mutex> lg(buffer_mut_);
 
-      // Let's see if at least some of the requested data is already
-      // in the buffer
-      if (offset >= buffered_start_ &&
+      uint64_t first_page_start = 0;
+      size_t actual_bytes_toread = 0;
+      size_t bytes_requested = left;
+
+      if (!read_ahead_ && random_access_max_buffer_size_ == 0) {
+        CalculateReadParameters(offset, bytes_requested, actual_bytes_toread,
+          first_page_start);
+
+        assert(actual_bytes_toread > 0);
+
+        r = ReadIntoOneShotBuffer(offset, first_page_start,
+          actual_bytes_toread, left, dest);
+      } else {
+
+        std::unique_lock<std::mutex> lock(buffer_mut_);
+
+        // Let's see if at least some of the requested data is already
+        // in the buffer
+        if (offset >= buffered_start_ &&
           offset < (buffered_start_ + buffer_.CurrentSize())) {
-        size_t buffer_offset = offset - buffered_start_;
-        r = buffer_.Read(dest, buffer_offset, left);
-        assert(r >= 0);
+          size_t buffer_offset = offset - buffered_start_;
+          r = buffer_.Read(dest, buffer_offset, left);
+          assert(r >= 0);
 
-        left -= size_t(r);
-        offset += r;
-        dest += r;
-      }
-
-      // Still some left or none was buffered
-      if (left > 0) {
-        // Figure out the start/end offset for reading and amount to read
-        const size_t alignment = buffer_.Alignment();
-        const size_t start_page_start =
-            TruncateToPageBoundary(alignment, offset);
-        const size_t end_page_start =
-            TruncateToPageBoundary(alignment, offset + left - 1);
-        const size_t actual_bytes_toread =
-            (end_page_start - start_page_start) + alignment;
-
-        if (buffer_.Capacity() < actual_bytes_toread) {
-          buffer_.AllocateNewBuffer(actual_bytes_toread);
-        } else {
-          buffer_.Clear();
+          left -= size_t(r);
+          offset += r;
+          dest += r;
         }
 
-        SSIZE_T read = 0;
-        read = pread(hFile_, buffer_.Destination(), actual_bytes_toread,
-                      start_page_start);
+        // Still some left or none was buffered
+        if (left > 0) {
+          // Figure out the start/end offset for reading and amount to read
+          bytes_requested = left;
 
-        if (read > 0) {
-          buffer_.Size(read);
-          buffered_start_ = start_page_start;
-
-          // Let's figure out how much we read from the users standpoint
-          if ((buffered_start_ + uint64_t(read)) > offset) {
-            size_t buffer_offset = offset - buffered_start_;
-            r = buffer_.Read(dest, buffer_offset, left);
-          } else {
-            r = 0;
+          if (read_ahead_ && bytes_requested < compaction_readahead_size_) {
+            bytes_requested = compaction_readahead_size_;
           }
-          left -= r;
-        } else {
-          r = read;
+
+          CalculateReadParameters(offset, bytes_requested, actual_bytes_toread,
+            first_page_start);
+
+          assert(actual_bytes_toread > 0);
+
+          if (buffer_.Capacity() < actual_bytes_toread) {
+            // If we are in read-ahead mode or the requested size
+            // exceeds max buffer size then use one-shot
+            // big buffer otherwise reallocate main buffer
+            if (read_ahead_ ||
+              (actual_bytes_toread > random_access_max_buffer_size_)) {
+              // Unlock the mutex since we are not using instance buffer
+              lock.unlock();
+              r = ReadIntoOneShotBuffer(offset, first_page_start,
+                actual_bytes_toread, left, dest);
+            }
+            else {
+              buffer_.AllocateNewBuffer(actual_bytes_toread);
+              r = ReadIntoInstanceBuffer(offset, first_page_start,
+                actual_bytes_toread, left, dest);
+            }
+          }
+          else {
+            buffer_.Clear();
+            r = ReadIntoInstanceBuffer(offset, first_page_start,
+              actual_bytes_toread, left, dest);
+          }
         }
       }
-
     } else {
       r = pread(hFile_, scratch, left, offset);
       if (r > 0) {
@@ -802,7 +911,21 @@ class WinRandomAccessFile : public RandomAccessFile {
     return true;
   }
 
-  virtual void Hint(AccessPattern pattern) override {}
+  virtual void Hint(AccessPattern pattern) override {
+    if (pattern == SEQUENTIAL && !use_os_buffer_ &&
+        compaction_readahead_size_ > 0) {
+      std::lock_guard<std::mutex> lg(buffer_mut_);
+      if (!read_ahead_) {
+        read_ahead_ = true;
+        // This would allocate read-ahead size + 2 alignments
+        // - one for memory alignment which added implicitly by AlignedBuffer
+        // - We add one more alignment because we will read one alignment more
+        // from disk
+        buffer_.AllocateNewBuffer(compaction_readahead_size_ +
+                                  buffer_.Alignment());
+      }
+    }
+  }
 
   virtual Status InvalidateCache(size_t offset, size_t length) override {
     return Status::OK();
@@ -862,13 +985,13 @@ class WinWritableFile : public WritableFile {
 
     // Used for buffered access ONLY
     assert(use_os_buffer_);
-    assert(data.size() < std::numeric_limits<int>::max());
+    assert(data.size() < std::numeric_limits<DWORD>::max());
 
     Status s;
 
     DWORD bytesWritten = 0;
     if (!WriteFile(hFile_, data.data(),
-        data.size(), &bytesWritten, NULL)) {
+        static_cast<DWORD>(data.size()), &bytesWritten, NULL)) {
       auto lastError = GetLastError();
       s = IOErrorFromWindowsError(
         "Failed to WriteFile: " + filename_,
@@ -884,8 +1007,7 @@ class WinWritableFile : public WritableFile {
   virtual Status PositionedAppend(const Slice& data, uint64_t offset) override {
     Status s;
 
-    SSIZE_T ret = pwrite(hFile_, data.data(), 
-      data.size(), offset);
+    SSIZE_T ret = pwrite(hFile_, data.data(), data.size(), offset);
 
     // Error break
     if (ret < 0) {
@@ -961,9 +1083,9 @@ class WinWritableFile : public WritableFile {
     return filesize_;
   }
 
-  virtual Status Allocate(off_t offset, off_t len) override {
+  virtual Status Allocate(uint64_t offset, uint64_t len) override {
     Status status;
-    TEST_KILL_RANDOM(rocksdb_kill_odds);
+    TEST_KILL_RANDOM("WinWritableFile::Allocate", rocksdb_kill_odds);
 
     // Make sure that we reserve an aligned amount of space
     // since the reservation block size is driven outside so we want
@@ -1015,6 +1137,8 @@ void WinthreadCall(const char* label, std::error_code result) {
   }
 }
 }
+
+typedef VOID(WINAPI * FnGetSystemTimePreciseAsFileTime)(LPFILETIME);
 
 class WinEnv : public Env {
  public:
@@ -1460,7 +1584,8 @@ class WinEnv : public Env {
   }
 
   virtual void Schedule(void (*function)(void*), void* arg, Priority pri = LOW,
-                        void* tag = nullptr) override;
+                        void* tag = nullptr,
+                        void (*unschedFunction)(void* arg) = 0) override;
 
   virtual int UnSchedule(void* arg, Priority pri) override;
 
@@ -1553,25 +1678,29 @@ class WinEnv : public Env {
   }
 
   virtual uint64_t NowMicros() override {
-    // all std::chrono clocks on windows proved to return
-    // values that may repeat that is not good enough for some uses.
-    const int64_t c_UnixEpochStartTicks = 116444736000000000i64;
-    const int64_t c_FtToMicroSec = 10;
+    if (GetSystemTimePreciseAsFileTime_ != NULL) {
+      // all std::chrono clocks on windows proved to return
+      // values that may repeat that is not good enough for some uses.
+      const int64_t c_UnixEpochStartTicks = 116444736000000000i64;
+      const int64_t c_FtToMicroSec = 10;
 
-    // This interface needs to return system time and not
-    // just any microseconds because it is often used as an argument
-    // to TimedWait() on condition variable
-    FILETIME ftSystemTime;
-    GetSystemTimePreciseAsFileTime(&ftSystemTime);
+      // This interface needs to return system time and not
+      // just any microseconds because it is often used as an argument
+      // to TimedWait() on condition variable
+      FILETIME ftSystemTime;
+      GetSystemTimePreciseAsFileTime_(&ftSystemTime);
 
-    LARGE_INTEGER li;
-    li.LowPart = ftSystemTime.dwLowDateTime;
-    li.HighPart = ftSystemTime.dwHighDateTime;
-    // Subtract unix epoch start
-    li.QuadPart -= c_UnixEpochStartTicks;
-    // Convert to microsecs
-    li.QuadPart /= c_FtToMicroSec;
-    return li.QuadPart;
+      LARGE_INTEGER li;
+      li.LowPart = ftSystemTime.dwLowDateTime;
+      li.HighPart = ftSystemTime.dwHighDateTime;
+      // Subtract unix epoch start
+      li.QuadPart -= c_UnixEpochStartTicks;
+      // Convert to microsecs
+      li.QuadPart /= c_FtToMicroSec;
+      return li.QuadPart;
+    }
+    using namespace std::chrono;
+    return duration_cast<microseconds>(system_clock::now().time_since_epoch()).count();
   }
 
   virtual uint64_t NowNanos() override {
@@ -1594,7 +1723,9 @@ class WinEnv : public Env {
 
   virtual Status GetHostName(char* name, uint64_t len) override {
     Status s;
-    DWORD nSize = len;
+    DWORD nSize = 
+      static_cast<DWORD>(std::min<uint64_t>(len,
+            std::numeric_limits<DWORD>::max()));
 
     if (!::GetComputerNameA(name, &nSize)) {
       auto lastError = GetLastError();
@@ -1889,7 +2020,8 @@ class WinEnv : public Env {
       }
     }
 
-    void Schedule(void (*function)(void* arg1), void* arg, void* tag) {
+    void Schedule(void (*function)(void* arg1), void* arg, void* tag,
+                  void (*unschedFunction)(void* arg)) {
       std::lock_guard<std::mutex> lg(mu_);
 
       if (exit_all_threads_) {
@@ -1903,6 +2035,7 @@ class WinEnv : public Env {
       queue_.back().function = function;
       queue_.back().arg = arg;
       queue_.back().tag = tag;
+      queue_.back().unschedFunction = unschedFunction;
       queue_len_.store(queue_.size(), std::memory_order_relaxed);
 
       if (!HasExcessiveThread()) {
@@ -1924,6 +2057,11 @@ class WinEnv : public Env {
       BGQueue::iterator it = queue_.begin();
       while (it != queue_.end()) {
         if (arg == (*it).tag) {
+          void (*unschedFunction)(void*) = (*it).unschedFunction;
+          void* arg1 = (*it).arg;
+          if (unschedFunction != nullptr) {
+            (*unschedFunction)(arg1);
+          }
           it = queue_.erase(it);
           count++;
         } else {
@@ -1947,6 +2085,7 @@ class WinEnv : public Env {
       void* arg;
       void (*function)(void*);
       void* tag;
+      void (*unschedFunction)(void*);
     };
 
     typedef std::deque<BGItem> BGQueue;
@@ -1971,6 +2110,7 @@ class WinEnv : public Env {
   std::vector<ThreadPool> thread_pools_;
   mutable std::mutex mu_;
   std::vector<std::thread> threads_to_join_;
+  FnGetSystemTimePreciseAsFileTime GetSystemTimePreciseAsFileTime_;
 };
 
 WinEnv::WinEnv()
@@ -1979,7 +2119,15 @@ WinEnv::WinEnv()
       page_size_(4 * 1012),
       allocation_granularity_(page_size_),
       perf_counter_frequency_(0),
-      thread_pools_(Priority::TOTAL) {
+      thread_pools_(Priority::TOTAL),
+      GetSystemTimePreciseAsFileTime_(NULL) {
+
+  HMODULE module = GetModuleHandle("kernel32.dll");
+  if (module != NULL) {
+    GetSystemTimePreciseAsFileTime_ = (FnGetSystemTimePreciseAsFileTime)GetProcAddress(
+      module, "GetSystemTimePreciseAsFileTime");
+  }
+
   SYSTEM_INFO sinfo;
   GetSystemInfo(&sinfo);
 
@@ -2005,9 +2153,9 @@ WinEnv::WinEnv()
 }
 
 void WinEnv::Schedule(void (*function)(void*), void* arg, Priority pri,
-                      void* tag) {
+                      void* tag, void (*unschedFunction)(void* arg)) {
   assert(pri >= Priority::LOW && pri <= Priority::HIGH);
-  thread_pools_[pri].Schedule(function, arg, tag);
+  thread_pools_[pri].Schedule(function, arg, tag, unschedFunction);
 }
 
 int WinEnv::UnSchedule(void* arg, Priority pri) {

@@ -153,7 +153,14 @@ bool BlockIter::ParseNextKey() {
       CorruptionError();
       return false;
     } else {
-      key_.TrimAppend(shared, p, non_shared);
+      if (shared == 0) {
+        // If this key dont share any bytes with prev key then we dont need
+        // to decode it and can use it's address in the block directly.
+        key_.SetKey(Slice(p, non_shared), false /* copy */);
+      } else {
+        // This key share `shared` bytes with prev key, we need to decode it
+        key_.TrimAppend(shared, p, non_shared);
+      }
       value_ = Slice(p + non_shared, value_length);
       while (restart_index_ + 1 < num_restarts_ &&
              GetRestartPoint(restart_index_ + 1) < current_) {
@@ -316,14 +323,14 @@ Block::Block(BlockContents&& contents)
   }
 }
 
-Iterator* Block::NewIterator(
-    const Comparator* cmp, BlockIter* iter, bool total_order_seek) {
+InternalIterator* Block::NewIterator(const Comparator* cmp, BlockIter* iter,
+                                     bool total_order_seek) {
   if (size_ < 2*sizeof(uint32_t)) {
     if (iter != nullptr) {
       iter->SetStatus(Status::Corruption("bad block contents"));
       return iter;
     } else {
-      return NewErrorIterator(Status::Corruption("bad block contents"));
+      return NewErrorInternalIterator(Status::Corruption("bad block contents"));
     }
   }
   const uint32_t num_restarts = NumRestarts();
@@ -332,7 +339,7 @@ Iterator* Block::NewIterator(
       iter->SetStatus(Status::OK());
       return iter;
     } else {
-      return NewEmptyIterator();
+      return NewEmptyInternalIterator();
     }
   } else {
     BlockHashIndex* hash_index_ptr =
