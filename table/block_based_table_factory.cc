@@ -9,9 +9,15 @@
 
 #include "table/block_based_table_factory.h"
 
+#ifndef __STDC_FORMAT_MACROS
+#define __STDC_FORMAT_MACROS
+#endif
+
+#include <inttypes.h>
+#include <stdint.h>
+
 #include <memory>
 #include <string>
-#include <stdint.h>
 
 #include "options/options_helper.h"
 #include "port/port.h"
@@ -192,12 +198,27 @@ std::string BlockBasedTableFactory::GetPrintableTableOptions() const {
   snprintf(buffer, kBufferSize, "  index_block_restart_interval: %d\n",
            table_options_.index_block_restart_interval);
   ret.append(buffer);
+  snprintf(buffer, kBufferSize, "  metadata_block_size: %" PRIu64 "\n",
+           table_options_.metadata_block_size);
+  ret.append(buffer);
+  snprintf(buffer, kBufferSize, "  partition_filters: %d\n",
+           table_options_.partition_filters);
+  ret.append(buffer);
+  snprintf(buffer, kBufferSize, "  use_delta_encoding: %d\n",
+           table_options_.use_delta_encoding);
+  ret.append(buffer);
   snprintf(buffer, kBufferSize, "  filter_policy: %s\n",
            table_options_.filter_policy == nullptr ?
              "nullptr" : table_options_.filter_policy->Name());
   ret.append(buffer);
   snprintf(buffer, kBufferSize, "  whole_key_filtering: %d\n",
            table_options_.whole_key_filtering);
+  ret.append(buffer);
+  snprintf(buffer, kBufferSize, "  verify_compression: %d\n",
+           table_options_.verify_compression);
+  ret.append(buffer);
+  snprintf(buffer, kBufferSize, "  read_amp_bytes_per_bit: %d\n",
+           table_options_.read_amp_bytes_per_bit);
   ret.append(buffer);
   snprintf(buffer, kBufferSize, "  format_version: %d\n",
            table_options_.format_version);
@@ -347,6 +368,8 @@ Status GetBlockBasedTableOptionsFromMap(
           (iter->second.verification != OptionVerificationType::kByName &&
            iter->second.verification !=
                OptionVerificationType::kByNameAllowNull &&
+           iter->second.verification !=
+               OptionVerificationType::kByNameAllowFromNull &&
            iter->second.verification != OptionVerificationType::kDeprecated)) {
         // Restore "new_options" to the default "base_options".
         *new_table_options = table_options;

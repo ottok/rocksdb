@@ -82,6 +82,8 @@ void PessimisticTransaction::Initialize(const TransactionOptions& txn_options) {
   if (expiration_time_ > 0) {
     txn_db_impl_->InsertExpirableTransaction(txn_id_, this);
   }
+  use_only_the_last_commit_time_batch_for_recovery_ =
+      txn_options.use_only_the_last_commit_time_batch_for_recovery;
 }
 
 PessimisticTransaction::~PessimisticTransaction() {
@@ -125,7 +127,7 @@ WriteCommittedTxn::WriteCommittedTxn(TransactionDB* txn_db,
                                      const TransactionOptions& txn_options)
     : PessimisticTransaction(txn_db, write_options, txn_options){};
 
-Status WriteCommittedTxn::CommitBatch(WriteBatch* batch) {
+Status PessimisticTransaction::CommitBatch(WriteBatch* batch) {
   TransactionKeyMap keys_to_unlock;
   Status s = LockBatch(batch, &keys_to_unlock);
 
@@ -148,7 +150,7 @@ Status WriteCommittedTxn::CommitBatch(WriteBatch* batch) {
 
   if (can_commit) {
     txn_state_.store(AWAITING_COMMIT);
-    s = db_->Write(write_options_, batch);
+    s = CommitBatchInternal(batch);
     if (s.ok()) {
       txn_state_.store(COMMITED);
     }
@@ -305,6 +307,11 @@ Status WriteCommittedTxn::CommitWithoutPrepareInternal() {
   return s;
 }
 
+Status WriteCommittedTxn::CommitBatchInternal(WriteBatch* batch) {
+  Status s = db_->Write(write_options_, batch);
+  return s;
+}
+
 Status WriteCommittedTxn::CommitInternal() {
   // We take the commit-time batch and append the Commit marker.
   // The Memtable will ignore the Commit marker in non-recovery mode
@@ -324,13 +331,13 @@ Status WriteCommittedTxn::CommitInternal() {
   return s;
 }
 
-Status WriteCommittedTxn::Rollback() {
+Status PessimisticTransaction::Rollback() {
   Status s;
   if (txn_state_ == PREPARED) {
-    WriteBatch rollback_marker;
-    WriteBatchInternal::MarkRollback(&rollback_marker, name_);
     txn_state_.store(AWAITING_ROLLBACK);
-    s = db_impl_->WriteImpl(write_options_, &rollback_marker);
+
+    s = RollbackInternal();
+
     if (s.ok()) {
       // we do not need to keep our prepared section around
       assert(log_number_ > 0);
@@ -348,6 +355,13 @@ Status WriteCommittedTxn::Rollback() {
         "Two phase transaction is not in state for rollback.");
   }
 
+  return s;
+}
+
+Status WriteCommittedTxn::RollbackInternal() {
+  WriteBatch rollback_marker;
+  WriteBatchInternal::MarkRollback(&rollback_marker, name_);
+  auto s = db_impl_->WriteImpl(write_options_, &rollback_marker);
   return s;
 }
 

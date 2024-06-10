@@ -826,6 +826,10 @@ DEFINE_int32(rate_limit_delay_max_milliseconds, 1000,
 
 DEFINE_uint64(rate_limiter_bytes_per_sec, 0, "Set options.rate_limiter value.");
 
+DEFINE_bool(rate_limiter_auto_tuned, false,
+            "Enable dynamic adjustment of rate limit according to demand for "
+            "background I/O");
+
 DEFINE_bool(rate_limit_bg_reads, false,
             "Use options.rate_limiter on compaction reads");
 
@@ -3212,20 +3216,6 @@ void VerifyDBFromDB(std::string& truth_db_name) {
     if (FLAGS_thread_status_per_interval > 0) {
       options.enable_thread_tracking = true;
     }
-    if (FLAGS_rate_limiter_bytes_per_sec > 0) {
-      if (FLAGS_rate_limit_bg_reads &&
-          !FLAGS_new_table_reader_for_compaction_inputs) {
-        fprintf(stderr,
-                "rate limit compaction reads must have "
-                "new_table_reader_for_compaction_inputs set\n");
-        exit(1);
-      }
-      options.rate_limiter.reset(NewGenericRateLimiter(
-          FLAGS_rate_limiter_bytes_per_sec, 100 * 1000 /* refill_period_us */,
-          10 /* fairness */,
-          FLAGS_rate_limit_bg_reads ? RateLimiter::Mode::kReadsOnly
-                                    : RateLimiter::Mode::kWritesOnly));
-    }
 
 #ifndef ROCKSDB_LITE
     if (FLAGS_readonly && FLAGS_transaction_db) {
@@ -3258,6 +3248,22 @@ void VerifyDBFromDB(std::string& truth_db_name) {
       FLAGS_env->LowerThreadPoolIOPriority(Env::HIGH);
     }
     options.env = FLAGS_env;
+
+    if (FLAGS_rate_limiter_bytes_per_sec > 0) {
+      if (FLAGS_rate_limit_bg_reads &&
+          !FLAGS_new_table_reader_for_compaction_inputs) {
+        fprintf(stderr,
+                "rate limit compaction reads must have "
+                "new_table_reader_for_compaction_inputs set\n");
+        exit(1);
+      }
+      options.rate_limiter.reset(NewGenericRateLimiter(
+          FLAGS_rate_limiter_bytes_per_sec, 100 * 1000 /* refill_period_us */,
+          10 /* fairness */,
+          FLAGS_rate_limit_bg_reads ? RateLimiter::Mode::kReadsOnly
+                                    : RateLimiter::Mode::kWritesOnly,
+          FLAGS_rate_limiter_auto_tuned));
+    }
 
     if (FLAGS_num_multi_db <= 1) {
       OpenDb(options, FLAGS_db, &db_);
@@ -3359,7 +3365,7 @@ void VerifyDBFromDB(std::string& truth_db_name) {
         db->db = db->opt_txn_db->GetBaseDB();
       }
     } else if (FLAGS_transaction_db) {
-      TransactionDB* ptr;
+      TransactionDB* ptr = nullptr;
       TransactionDBOptions txn_db_options;
       s = CreateLoggerFromOptions(db_name, options, &options.info_log);
       if (s.ok()) {
@@ -3370,7 +3376,7 @@ void VerifyDBFromDB(std::string& truth_db_name) {
       }
     } else if (FLAGS_use_blob_db) {
       blob_db::BlobDBOptions blob_db_options;
-      blob_db::BlobDB* ptr;
+      blob_db::BlobDB* ptr = nullptr;
       s = blob_db::BlobDB::Open(options, blob_db_options, db_name, &ptr);
       if (s.ok()) {
         db->db = ptr;
@@ -4938,6 +4944,7 @@ void VerifyDBFromDB(std::string& truth_db_name) {
     if (FLAGS_perf_level > rocksdb::PerfLevel::kDisable) {
       thread->stats.AddMessage(get_perf_context()->ToString());
     }
+    thread->stats.AddBytes(static_cast<int64_t>(inserter.GetBytesInserted()));
   }
 
   // Verifies consistency of data after RandomTransaction() has been run.

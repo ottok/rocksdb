@@ -55,6 +55,7 @@ void TransactionBaseImpl::Reinitialize(DB* db,
                                        const WriteOptions& write_options) {
   Clear();
   ClearSnapshot();
+  id_ = 0;
   db_ = db;
   name_.clear();
   log_number_ = 0;
@@ -463,6 +464,21 @@ Status TransactionBaseImpl::DeleteUntracked(ColumnFamilyHandle* column_family,
 
   if (s.ok()) {
     s = GetBatchForWrite()->Delete(column_family, key);
+    if (s.ok()) {
+      num_deletes_++;
+    }
+  }
+
+  return s;
+}
+
+Status TransactionBaseImpl::SingleDeleteUntracked(
+    ColumnFamilyHandle* column_family, const Slice& key) {
+  Status s = TryLock(column_family, key, false /* read_only */,
+                     true /* exclusive */, true /* untracked */);
+
+  if (s.ok()) {
+    s = GetBatchForWrite()->SingleDelete(column_family, key);
     if (s.ok()) {
       num_deletes_++;
     }

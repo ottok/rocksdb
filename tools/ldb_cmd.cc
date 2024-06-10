@@ -1353,6 +1353,9 @@ DBDumperCommand::DBDumperCommand(
   itr = options.find(ARG_PATH);
   if (itr != options.end()) {
     path_ = itr->second;
+    if (db_path_.empty()) {
+      db_path_ = path_;
+    }
   }
 }
 
@@ -1485,6 +1488,8 @@ void DBDumperCommand::DoDumpCommand() {
             ReadableTime(ttl_start).c_str(), ReadableTime(ttl_end).c_str());
   }
 
+  HistogramImpl vsize_hist;
+
   for (; iter->Valid(); iter->Next()) {
     int rawtime = 0;
     // If end marker was specified, we stop before it
@@ -1529,7 +1534,9 @@ void DBDumperCommand::DoDumpCommand() {
 
     }
 
-
+    if (count_only_) {
+      vsize_hist.Add(iter->value().size());
+    }
 
     if (!count_only_ && !count_delim_) {
       if (is_db_ttl_ && timestamp_) {
@@ -1550,6 +1557,11 @@ void DBDumperCommand::DoDumpCommand() {
         (long long )c,(long long)s2);
   } else {
     fprintf(stdout, "Keys in range: %lld\n", (long long) count);
+  }
+
+  if (count_only_) {
+    fprintf(stdout, "Value size distribution: \n");
+    fprintf(stdout, "%s\n", vsize_hist.ToString().c_str());
   }
   // Clean up
   delete iter;
@@ -2794,7 +2806,7 @@ void DumpSstFile(std::string filename, bool output_hex, bool show_properties) {
   }
   // no verification
   rocksdb::SstFileReader reader(filename, false, output_hex);
-  Status st = reader.ReadSequential(true, -1, false,  // has_from
+  Status st = reader.ReadSequential(true, std::numeric_limits<uint64_t>::max(), false,  // has_from
                                     from_key, false,  // has_to
                                     to_key);
   if (!st.ok()) {
