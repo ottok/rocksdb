@@ -336,12 +336,18 @@ endif()
 
 # Used to run CI build and tests so we can run faster
 option(OPTDBG "Build optimized debug build with MSVC" OFF)
+option(WITH_RUNTIME_DEBUG "build with debug version of runtime library" ON)
 if(MSVC)
   if(OPTDBG)
     message(STATUS "Debug optimization is enabled")
-    set(CMAKE_CXX_FLAGS_DEBUG "/Oxt /${RUNTIME_LIBRARY}d")
+    set(CMAKE_CXX_FLAGS_DEBUG "/Oxt")
   else()
-    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /Od /RTC1 /Gm /${RUNTIME_LIBRARY}d")
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /Od /RTC1 /Gm")
+  endif()
+  if(WITH_RUNTIME_DEBUG)
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /${RUNTIME_LIBRARY}d")
+  else()
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /${RUNTIME_LIBRARY}")
   endif()
   set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Oxt /Zp8 /Gm- /Gy /${RUNTIME_LIBRARY}")
 
@@ -549,6 +555,8 @@ set(SOURCES
         table/cuckoo_table_builder.cc
         table/cuckoo_table_factory.cc
         table/cuckoo_table_reader.cc
+        table/data_block_hash_index.cc
+        table/data_block_footer.cc
         table/flush_block_policy.cc
         table/format.cc
         table/full_filter_block.cc
@@ -572,6 +580,7 @@ set(SOURCES
         tools/ldb_cmd.cc
         tools/ldb_tool.cc
         tools/sst_dump_tool.cc
+        tools/trace_analyzer_tool.cc
         util/arena.cc
         util/auto_roll_logger.cc
         util/bloom.cc
@@ -596,19 +605,20 @@ set(SOURCES
         util/slice.cc
         util/sst_file_manager_impl.cc
         util/status.cc
-        util/status_message.cc
         util/string_util.cc
         util/sync_point.cc
         util/sync_point_impl.cc
         util/testutil.cc
         util/thread_local.cc
         util/threadpool_imp.cc
+        util/trace_replay.cc
         util/transaction_test_util.cc
         util/xxhash.cc
         utilities/backupable/backupable_db.cc
         utilities/blob_db/blob_compaction_filter.cc
         utilities/blob_db/blob_db.cc
         utilities/blob_db/blob_db_impl.cc
+        utilities/blob_db/blob_db_impl_filesnapshot.cc
         utilities/blob_db/blob_dump_tool.cc
         utilities/blob_db/blob_file.cc
         utilities/blob_db/blob_log_reader.cc
@@ -650,6 +660,7 @@ set(SOURCES
         utilities/simulator_cache/sim_cache.cc
         utilities/spatialdb/spatial_db.cc
         utilities/table_properties_collectors/compact_on_deletion_collector.cc
+        utilities/trace/file_trace_reader_writer.cc
         utilities/transactions/optimistic_transaction_db_impl.cc
         utilities/transactions/optimistic_transaction.cc
         utilities/transactions/pessimistic_transaction.cc
@@ -913,12 +924,14 @@ if(WITH_TESTS)
         table/cleanable_test.cc
         table/cuckoo_table_builder_test.cc
         table/cuckoo_table_reader_test.cc
+        table/data_block_hash_index_test.cc
         table/full_filter_block_test.cc
         table/merger_test.cc
         table/table_test.cc
         tools/ldb_cmd_test.cc
         tools/reduce_levels_test.cc
         tools/sst_dump_test.cc
+        tools/trace_analyzer_test.cc
         util/arena_test.cc
         util/auto_roll_logger_test.cc
         util/autovector_test.cc
@@ -933,6 +946,7 @@ if(WITH_TESTS)
         util/hash_test.cc
         util/heap_test.cc
         util/rate_limiter_test.cc
+        util/repeatable_thread_test.cc
         util/slice_transform_test.cc
         util/timer_queue_test.cc
         util/thread_list_test.cc
@@ -975,6 +989,7 @@ if(WITH_TESTS)
   set(BENCHMARKS
     cache/cache_bench.cc
     memtable/memtablerep_bench.cc
+    db/range_del_aggregator_bench.cc
     tools/db_bench.cc
     table/table_reader_bench.cc
     utilities/column_aware_encoding_exp.cc
