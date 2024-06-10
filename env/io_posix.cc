@@ -88,6 +88,19 @@ int Fadvise(int fd, off_t offset, size_t len, int advice) {
 #endif
 }
 
+// A wrapper for fadvise, if the platform doesn't support fadvise,
+// it will simply return 0.
+int Madvise(void* addr, size_t len, int advice) {
+#ifdef OS_LINUX
+  return posix_madvise(addr, len, advice);
+#else
+  (void)addr;
+  (void)len;
+  (void)advice;
+  return 0;  // simply do nothing.
+#endif
+}
+
 namespace {
 
 // On MacOS (and probably *BSD), the posix write and pwrite calls do not support
@@ -982,6 +995,29 @@ IOStatus PosixMmapReadableFile::Read(uint64_t offset, size_t n,
   return s;
 }
 
+void PosixMmapReadableFile::Hint(AccessPattern pattern) {
+  switch (pattern) {
+    case kNormal:
+      Madvise(mmapped_region_, length_, POSIX_MADV_NORMAL);
+      break;
+    case kRandom:
+      Madvise(mmapped_region_, length_, POSIX_MADV_RANDOM);
+      break;
+    case kSequential:
+      Madvise(mmapped_region_, length_, POSIX_MADV_SEQUENTIAL);
+      break;
+    case kWillNeed:
+      Madvise(mmapped_region_, length_, POSIX_MADV_WILLNEED);
+      break;
+    case kWontNeed:
+      Madvise(mmapped_region_, length_, POSIX_MADV_DONTNEED);
+      break;
+    default:
+      assert(false);
+      break;
+  }
+}
+
 IOStatus PosixMmapReadableFile::InvalidateCache(size_t offset, size_t length) {
 #ifndef OS_LINUX
   (void)offset;
@@ -1639,7 +1675,8 @@ PosixMemoryMappedFileBuffer::~PosixMemoryMappedFileBuffer() {
 // The magic number for BTRFS is fixed, if it's not defined, define it here
 #define BTRFS_SUPER_MAGIC 0x9123683E
 #endif
-PosixDirectory::PosixDirectory(int fd) : fd_(fd) {
+PosixDirectory::PosixDirectory(int fd, const std::string& directory_name)
+    : fd_(fd), directory_name_(directory_name) {
   is_btrfs_ = false;
 #ifdef OS_LINUX
   struct statfs buf;
@@ -1649,10 +1686,28 @@ PosixDirectory::PosixDirectory(int fd) : fd_(fd) {
 #endif
 }
 
-PosixDirectory::~PosixDirectory() { close(fd_); }
+PosixDirectory::~PosixDirectory() {
+  if (fd_ >= 0) {
+    IOStatus s = PosixDirectory::Close(IOOptions(), nullptr);
+    s.PermitUncheckedError();
+  }
+}
 
 IOStatus PosixDirectory::Fsync(const IOOptions& opts, IODebugContext* dbg) {
   return FsyncWithDirOptions(opts, dbg, DirFsyncOptions());
+}
+
+// Users who want the file entries synced in Directory project must call a
+// Fsync or FsyncWithDirOptions function before Close
+IOStatus PosixDirectory::Close(const IOOptions& /*opts*/,
+                               IODebugContext* /*dbg*/) {
+  IOStatus s = IOStatus::OK();
+  if (close(fd_) < 0) {
+    s = IOError("While closing directory ", directory_name_, errno);
+  } else {
+    fd_ = -1;
+  }
+  return s;
 }
 
 IOStatus PosixDirectory::FsyncWithDirOptions(
@@ -1686,15 +1741,19 @@ IOStatus PosixDirectory::FsyncWithDirOptions(
     }
     // fallback to dir-fsync for kDefault, kDirRenamed and kFileDeleted
   }
+
+  // skip fsync/fcntl when fd_ == -1 since this file descriptor has been closed
+  // in either the de-construction or the close function, data must have been
+  // fsync-ed before de-construction and close is called
 #ifdef HAVE_FULLFSYNC
   // btrfs is a Linux file system, while currently F_FULLFSYNC is available on
   // Mac OS.
   assert(!is_btrfs_);
-  if (::fcntl(fd_, F_FULLFSYNC) < 0) {
+  if (fd_ != -1 && ::fcntl(fd_, F_FULLFSYNC) < 0) {
     return IOError("while fcntl(F_FULLFSYNC)", "a directory", errno);
   }
 #else   // HAVE_FULLFSYNC
-  if (fsync(fd_) == -1) {
+  if (fd_ != -1 && fsync(fd_) == -1) {
     s = IOError("While fsync", "a directory", errno);
   }
 #endif  // HAVE_FULLFSYNC

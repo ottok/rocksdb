@@ -32,6 +32,7 @@
 #include "db/log_writer.h"
 #include "db/logs_with_prep_tracker.h"
 #include "db/memtable_list.h"
+#include "db/post_memtable_callback.h"
 #include "db/pre_release_callback.h"
 #include "db/range_del_aggregator.h"
 #include "db/read_callback.h"
@@ -112,6 +113,68 @@ class Directories {
   }
 
   FSDirectory* GetDbDir() { return db_dir_.get(); }
+
+  IOStatus Close(const IOOptions& options, IODebugContext* dbg) {
+    // close all directories for all database paths
+    IOStatus s = IOStatus::OK();
+    IOStatus temp_s = IOStatus::OK();
+
+    // The default implementation for Close() in Directory/FSDirectory class
+    // "NotSupported" status, the upper level interface should be able to
+    // handle this error so that Close() does not fail after upgrading when
+    // run on FileSystems that have not implemented `Directory::Close()` or
+    // `FSDirectory::Close()` yet
+
+    if (db_dir_) {
+      temp_s = db_dir_->Close(options, dbg);
+      if (!temp_s.ok()) {
+        if (temp_s.IsNotSupported()) {
+          temp_s.PermitUncheckedError();
+        } else {
+          s = temp_s;
+        }
+      }
+    }
+
+    if (!s.ok()) {
+      return s;
+    }
+
+    if (wal_dir_) {
+      s = wal_dir_->Close(options, dbg);
+      if (!temp_s.ok()) {
+        if (temp_s.IsNotSupported()) {
+          temp_s.PermitUncheckedError();
+        } else {
+          s = temp_s;
+        }
+      }
+    }
+
+    if (!s.ok()) {
+      return s;
+    }
+
+    if (data_dirs_.size() > 0 && s.ok()) {
+      for (auto& data_dir_ptr : data_dirs_) {
+        if (data_dir_ptr) {
+          temp_s = data_dir_ptr->Close(options, dbg);
+          if (!temp_s.ok()) {
+            if (temp_s.IsNotSupported()) {
+              temp_s.PermitUncheckedError();
+            } else {
+              return temp_s;
+            }
+          }
+        }
+      }
+    }
+
+    // Mark temp_s as checked when temp_s is still the initial status
+    // (IOStatus::OK(), not checked yet)
+    temp_s.PermitUncheckedError();
+    return s;
+  }
 
  private:
   std::unique_ptr<FSDirectory> db_dir_;
@@ -283,6 +346,19 @@ class DBImpl : public DB {
 
   virtual const Snapshot* GetSnapshot() override;
   virtual void ReleaseSnapshot(const Snapshot* snapshot) override;
+  // Create a timestamped snapshot. This snapshot can be shared by multiple
+  // readers. If any of them uses it for write conflict checking, then
+  // is_write_conflict_boundary is true. For simplicity, set it to true by
+  // default.
+  std::pair<Status, std::shared_ptr<const Snapshot>> CreateTimestampedSnapshot(
+      SequenceNumber snapshot_seq, uint64_t ts);
+  std::shared_ptr<const SnapshotImpl> GetTimestampedSnapshot(uint64_t ts) const;
+  void ReleaseTimestampedSnapshotsOlderThan(
+      uint64_t ts, size_t* remaining_total_ss = nullptr);
+  Status GetTimestampedSnapshots(uint64_t ts_lb, uint64_t ts_ub,
+                                 std::vector<std::shared_ptr<const Snapshot>>&
+                                     timestamped_snapshots) const;
+
   using DB::GetProperty;
   virtual bool GetProperty(ColumnFamilyHandle* column_family,
                            const Slice& property, std::string* value) override;
@@ -1160,6 +1236,8 @@ class DBImpl : public DB {
   static void TEST_ResetDbSessionIdGen();
   static std::string GenerateDbSessionId(Env* env);
 
+  bool seq_per_batch() const { return seq_per_batch_; }
+
  protected:
   const std::string dbname_;
   // TODO(peterd): unify with VersionSet::db_id_
@@ -1170,6 +1248,7 @@ class DBImpl : public DB {
   std::unique_ptr<VersionSet> versions_;
   // Flag to check whether we allocated and own the info log file
   bool own_info_log_;
+  Status init_logger_creation_s_;
   const DBOptions initial_db_options_;
   Env* const env_;
   std::shared_ptr<IOTracer> io_tracer_;
@@ -1182,6 +1261,9 @@ class DBImpl : public DB {
   std::unique_ptr<Tracer> tracer_;
   InstrumentedMutex trace_mutex_;
   BlockCacheTracer block_cache_tracer_;
+
+  // constant false canceled flag, used when the compaction is not manual
+  const std::atomic<bool> kManualCompactionCanceledFalse_{false};
 
   // State below is protected by mutex_
   // With two_write_queues enabled, some of the variables that accessed during
@@ -1207,9 +1289,6 @@ class DBImpl : public DB {
   // only used for dynamically adjusting max_total_wal_size. it is a sum of
   // [write_buffer_size * max_write_buffer_number] over all column families
   uint64_t max_total_in_memory_state_;
-  // If true, we have only one (default) column family. We use this to optimize
-  // some code-paths
-  bool single_column_family_mode_;
 
   // The options to access storage files
   const FileOptions file_options_;
@@ -1342,7 +1421,8 @@ class DBImpl : public DB {
                    uint64_t* log_used = nullptr, uint64_t log_ref = 0,
                    bool disable_memtable = false, uint64_t* seq_used = nullptr,
                    size_t batch_cnt = 0,
-                   PreReleaseCallback* pre_release_callback = nullptr);
+                   PreReleaseCallback* pre_release_callback = nullptr,
+                   PostMemTableCallback* post_memtable_callback = nullptr);
 
   Status PipelinedWriteImpl(const WriteOptions& options, WriteBatch* updates,
                             WriteCallback* callback = nullptr,
@@ -1400,8 +1480,10 @@ class DBImpl : public DB {
 
   virtual bool OwnTablesAndLogs() const { return true; }
 
-  // Set DB identity file, and write DB ID to manifest if necessary.
-  Status SetDBId(bool read_only, RecoveryContext* recovery_ctx);
+  // Setup DB identity file, and write DB ID to manifest if necessary.
+  Status SetupDBId(bool read_only, RecoveryContext* recovery_ctx);
+  // Assign db_id_ and write DB ID to manifest if necessary.
+  void SetDBId(std::string&& id, bool read_only, RecoveryContext* recovery_ctx);
 
   // REQUIRES: db mutex held when calling this function, but the db mutex can
   // be released and re-acquired. Db mutex will be held when the function
@@ -1425,8 +1507,8 @@ class DBImpl : public DB {
   void SetDbSessionId();
 
   Status FailIfCfHasTs(const ColumnFamilyHandle* column_family) const;
-  Status FailIfTsSizesMismatch(const ColumnFamilyHandle* column_family,
-                               const Slice& ts) const;
+  Status FailIfTsMismatchCf(ColumnFamilyHandle* column_family, const Slice& ts,
+                            bool ts_for_read) const;
 
   // recovery_ctx stores the context about version edits and
   // LogAndApplyForRecovery persist all those edits to new Manifest after
@@ -1512,12 +1594,38 @@ class DBImpl : public DB {
       return s;
     }
 
+    bool IsSyncing() { return getting_synced; }
+
+    uint64_t GetPreSyncSize() {
+      assert(getting_synced);
+      return pre_sync_size;
+    }
+
+    void PrepareForSync() {
+      assert(!getting_synced);
+      // Size is expected to be monotonically increasing.
+      assert(writer->file()->GetFlushedSize() >= pre_sync_size);
+      getting_synced = true;
+      pre_sync_size = writer->file()->GetFlushedSize();
+    }
+
+    void FinishSync() {
+      assert(getting_synced);
+      getting_synced = false;
+    }
+
     uint64_t number;
     // Visual Studio doesn't support deque's member to be noncopyable because
     // of a std::unique_ptr as a member.
     log::Writer* writer;  // own
+
+   private:
     // true for some prefix of logs_
     bool getting_synced = false;
+    // The size of the file before the sync happens. This amount is guaranteed
+    // to be persisted even if appends happen during sync so it can be used for
+    // tracking the synced size in MANIFEST.
+    uint64_t pre_sync_size = 0;
   };
 
   // PurgeFileInfo is a structure to hold information of files to be deleted in
@@ -1573,7 +1681,11 @@ class DBImpl : public DB {
           output_path_id(_output_path_id),
           exclusive(_exclusive),
           disallow_trivial_move(_disallow_trivial_move),
-          canceled(_canceled) {}
+          canceled(_canceled ? *_canceled : canceled_internal_storage) {}
+    // When _canceled is not provided by ther user, we assign the reference of
+    // canceled_internal_storage to it to consolidate canceled and
+    // manual_compaction_paused since DisableManualCompaction() might be
+    // called
 
     ColumnFamilyData* cfd;
     int input_level;
@@ -1590,7 +1702,12 @@ class DBImpl : public DB {
     InternalKey* manual_end = nullptr;   // how far we are compacting
     InternalKey tmp_storage;      // Used to keep track of compaction progress
     InternalKey tmp_storage1;     // Used to keep track of compaction progress
-    std::atomic<bool>* canceled;  // Compaction canceled by the user?
+
+    // When the user provides a canceled pointer in CompactRangeOptions, the
+    // above varaibe is the reference of the user-provided
+    // `canceled`, otherwise, it is the reference of canceled_internal_storage
+    std::atomic<bool> canceled_internal_storage = false;
+    std::atomic<bool>& canceled;  // Compaction canceled pointer reference
   };
   struct PrepickedCompaction {
     // background compaction takes ownership of `compaction`.
@@ -1827,9 +1944,12 @@ class DBImpl : public DB {
   Status PreprocessWrite(const WriteOptions& write_options, bool* need_log_sync,
                          WriteContext* write_context);
 
-  WriteBatch* MergeBatch(const WriteThread::WriteGroup& write_group,
-                         WriteBatch* tmp_batch, size_t* write_with_wal,
-                         WriteBatch** to_be_cached_state);
+  // Merge write batches in the write group into merged_batch.
+  // Returns OK if merge is successful.
+  // Returns Corruption if corruption in write batch is detected.
+  Status MergeBatch(const WriteThread::WriteGroup& write_group,
+                    WriteBatch* tmp_batch, WriteBatch** merged_batch,
+                    size_t* write_with_wal, WriteBatch** to_be_cached_state);
 
   // rate_limiter_priority is used to charge `DBOptions::rate_limiter`
   // for automatic WAL flush (`Options::manual_wal_flush` == false)
@@ -1837,12 +1957,13 @@ class DBImpl : public DB {
   IOStatus WriteToWAL(const WriteBatch& merged_batch, log::Writer* log_writer,
                       uint64_t* log_used, uint64_t* log_size,
                       Env::IOPriority rate_limiter_priority,
-                      bool with_db_mutex = false, bool with_log_mutex = false);
+                      LogFileNumberSize& log_file_number_size);
 
   IOStatus WriteToWAL(const WriteThread::WriteGroup& write_group,
                       log::Writer* log_writer, uint64_t* log_used,
                       bool need_log_sync, bool need_log_dir_sync,
-                      SequenceNumber sequence);
+                      SequenceNumber sequence,
+                      LogFileNumberSize& log_file_number_size);
 
   IOStatus ConcurrentWriteToWAL(const WriteThread::WriteGroup& write_group,
                                 uint64_t* log_used,
@@ -1967,9 +2088,23 @@ class DBImpl : public DB {
   SnapshotImpl* GetSnapshotImpl(bool is_write_conflict_boundary,
                                 bool lock = true);
 
+  // If snapshot_seq != kMaxSequenceNumber, then this function can only be
+  // called from the write thread that publishes sequence numbers to readers.
+  // For 1) write-committed, or 2) write-prepared + one-write-queue, this will
+  // be the write thread performing memtable writes. For write-prepared with
+  // two write queues, this will be the write thread writing commit marker to
+  // the WAL.
+  // If snapshot_seq == kMaxSequenceNumber, this function is called by a caller
+  // ensuring no writes to the database.
+  std::pair<Status, std::shared_ptr<const SnapshotImpl>>
+  CreateTimestampedSnapshotImpl(SequenceNumber snapshot_seq, uint64_t ts,
+                                bool lock = true);
+
   uint64_t GetMaxTotalWalSize() const;
 
   FSDirectory* GetDataDir(ColumnFamilyData* cfd, size_t path_id) const;
+
+  Status MaybeReleaseTimestampedSnapshotsAndCheck();
 
   Status CloseHelper();
 
@@ -2172,11 +2307,7 @@ class DBImpl : public DB {
   // are protected by locking both mutex_ and log_write_mutex_, and reads must
   // be under either mutex_ or log_write_mutex_.
   std::deque<LogFileNumberSize> alive_log_files_;
-  // Caching the result of `alive_log_files_.back()` so that we do not have to
-  // call `alive_log_files_.back()` in the write thread (WriteToWAL()) which
-  // requires locking db mutex if log_mutex_ is not already held in
-  // two-write-queues mode.
-  std::deque<LogFileNumberSize>::reverse_iterator alive_log_files_tail_;
+
   // Log files that aren't fully synced, and the current log file.
   // Synchronization:
   //  - push_back() is done from write_thread_ with locked mutex_ and
@@ -2239,6 +2370,8 @@ class DBImpl : public DB {
   TrimHistoryScheduler trim_history_scheduler_;
 
   SnapshotList snapshots_;
+
+  TimestampedSnapshotList timestamped_snapshots_;
 
   // For each background job, pending_outputs_ keeps the current file number at
   // the time that background job started.
@@ -2458,10 +2591,12 @@ class GetWithTimestampReadCallback : public ReadCallback {
 };
 
 extern Options SanitizeOptions(const std::string& db, const Options& src,
-                               bool read_only = false);
+                               bool read_only = false,
+                               Status* logger_creation_s = nullptr);
 
 extern DBOptions SanitizeOptions(const std::string& db, const DBOptions& src,
-                                 bool read_only = false);
+                                 bool read_only = false,
+                                 Status* logger_creation_s = nullptr);
 
 extern CompressionType GetCompressionFlush(
     const ImmutableCFOptions& ioptions,
@@ -2527,8 +2662,9 @@ inline Status DBImpl::FailIfCfHasTs(
   return Status::OK();
 }
 
-inline Status DBImpl::FailIfTsSizesMismatch(
-    const ColumnFamilyHandle* column_family, const Slice& ts) const {
+inline Status DBImpl::FailIfTsMismatchCf(ColumnFamilyHandle* column_family,
+                                         const Slice& ts,
+                                         bool ts_for_read) const {
   if (!column_family) {
     return Status::InvalidArgument("column family handle cannot be null");
   }
@@ -2547,6 +2683,19 @@ inline Status DBImpl::FailIfTsSizesMismatch(
     oss << "Timestamp sizes mismatch: expect " << ucmp->timestamp_size() << ", "
         << ts_sz << " given";
     return Status::InvalidArgument(oss.str());
+  }
+  if (ts_for_read) {
+    auto cfh = static_cast_with_check<ColumnFamilyHandleImpl>(column_family);
+    auto cfd = cfh->cfd();
+    std::string current_ts_low = cfd->GetFullHistoryTsLow();
+    if (!current_ts_low.empty() &&
+        ucmp->CompareTimestamp(ts, current_ts_low) < 0) {
+      std::stringstream oss;
+      oss << "Read timestamp: " << ts.ToString(true)
+          << " is smaller than full_history_ts_low: "
+          << Slice(current_ts_low).ToString(true) << std::endl;
+      return Status::InvalidArgument(oss.str());
+    }
   }
   return Status::OK();
 }

@@ -813,6 +813,10 @@ static bool SaveValue(void* arg, const char* entry) {
           }
         } else {
           *(s->status) = Status::NotFound();
+          if (ts_sz > 0 && s->timestamp != nullptr) {
+            Slice ts = ExtractTimestampFromUserKey(user_key_slice, ts_sz);
+            s->timestamp->assign(ts.data(), ts.size());
+          }
         }
         *(s->found_final_value) = true;
         return false;
@@ -1155,6 +1159,7 @@ Status MemTable::UpdateCallback(SequenceNumber seq, const Slice& key,
               if (VarintLength(new_prev_size) < VarintLength(prev_size)) {
                 // shift the value buffer as well.
                 memcpy(p, prev_buffer, new_prev_size);
+                prev_buffer = p;
               }
             }
             RecordTick(moptions_.statistics, NUMBER_KEYS_UPDATED);
