@@ -1,42 +1,58 @@
 # Rocksdb Change Log
-## 7.7.8 (11/27/2022)
-### Bug Fixes
+## 7.8.3 (11/29/2022)
+* Revert an internal change in 7.8.0 associated with some memory usage churn.
+
+## 7.8.2 (11/27/2022)
+### Behavior changes
+* Make best-efforts recovery verify SST unique ID before Version construction (#10962)
 * Fix failed memtable flush retry bug that could cause wrongly ordered updates, which would surface to writers as `Status::Corruption` in case of `force_consistency_checks=true` (default). It affects use cases that enable both parallel flush (`max_background_flushes > 1` or `max_background_jobs >= 8`) and non-default memtable count (`max_write_buffer_number > 2`).
 * Tiered Storage: fixed excessive keys written to penultimate level in non-debug builds.
-* Fixed a regression in iterator where range tombstones after `iterate_upper_bound` is processed.
 
-## 7.7.7 (11/15/2022)
 ### Bug Fixes
 * Fixed a regression in scan for async_io. During seek, valid buffers were getting cleared causing a regression.
+* Fixed a performance regression in iterator where range tombstones after `iterate_upper_bound` is processed.
 
-## 7.7.6 (11/03/2022)
+## 7.8.1 (11/2/2022)
 ### Bug Fixes
 * Fix memory corruption error in scans if async_io is enabled. Memory corruption happened if there is IOError while reading the data leading to empty buffer and other buffer already in progress of async read goes again for reading.
 
-## 7.7.5 (10/28/2022)
-### Bug Fixes
-* Fixed an iterator performance regression for delete range users when scanning through a consecutive sequence of range tombstones (#10877).
+## 7.8.0 (10/22/2022)
+### New Features
+* `DeleteRange()` now supports user-defined timestamp.
+* Provide support for async_io with tailing iterators when ReadOptions.tailing is enabled during scans.
+* Tiered Storage: allow data moving up from the last level to the penultimate level if the input level is penultimate level or above.
+* Added `DB::Properties::kFastBlockCacheEntryStats`, which is similar to `DB::Properties::kBlockCacheEntryStats`, except returns cached (stale) values in more cases to reduce overhead.
+* FIFO compaction now supports migrating from a multi-level DB via DB::Open(). During the migration phase, FIFO compaction picker will:
+* picks the sst file with the smallest starting key in the bottom-most non-empty level.
+* Note that during the migration phase, the file purge order will only be an approximation of "FIFO" as files in lower-level might sometime contain newer keys than files in upper-level.
+* Added an option `ignore_max_compaction_bytes_for_input` to ignore max_compaction_bytes limit when adding files to be compacted from input level. This should help reduce write amplification. The option is enabled by default.
+* Tiered Storage: allow data moving up from the last level even if it's a last level only compaction, as long as the penultimate level is empty.
+* Add a new option IOOptions.do_not_recurse that can be used by underlying file systems to skip recursing through sub directories and list only files in GetChildren API.
+* Add option `preserve_internal_time_seconds` to preserve the time information for the latest data. Which can be used to determine the age of data when `preclude_last_level_data_seconds` is enabled. The time information is attached with SST in table property `rocksdb.seqno.time.map` which can be parsed by tool ldb or sst_dump.
 
-## 7.7.4 (10/28/2022)
 ### Bug Fixes
-* Fixed a case of calling malloc_usable_size on result of operator new[].
-
-## 7.7.3 (10/11/2022)
-### Bug Fixes
-* Fixed a memory safety bug in experimental HyperClockCache (#10768)
-
-## 7.7.2 (10/05/2022)
-### Bug Fixes
+* Fix a bug in io_uring_prep_cancel in AbortIO API for posix which expects sqe->addr to match with read request submitted and wrong paramter was being passed.
+* Fixed a regression in iterator performance when the entire DB is a single memtable introduced in #10449. The fix is in #10705 and #10716.
+* Fixed an optimistic transaction validation bug caused by DBImpl::GetLatestSequenceForKey() returning non-latest seq for merge (#10724).
+* Fixed a bug in iterator refresh which could segfault for DeleteRange users (#10739).
+* Fixed a bug causing manual flush with `flush_opts.wait=false` to stall when database has stopped all writes (#10001).
 * Fixed a bug in iterator refresh that was not freeing up SuperVersion, which could cause excessive resource pinniung (#10770).
 * Fixed a bug where RocksDB could be doing compaction endlessly when allow_ingest_behind is true and the bottommost level is not filled (#10767).
+* Fixed a memory safety bug in experimental HyperClockCache (#10768)
+* Fixed some cases where `ldb update_manifest` and `ldb unsafe_remove_sst_file` are not usable because they were requiring the DB files to match the existing manifest state (before updating the manifest to match a desired state).
+
+### Performance Improvements
+* Try to align the compaction output file boundaries to the next level ones, which can reduce more than 10% compaction load for the default level compaction. The feature is enabled by default, to disable, set `AdvancedColumnFamilyOptions.level_compaction_dynamic_file_size` to false. As a side effect, it can create SSTs larger than the target_file_size (capped at 2x target_file_size) or smaller files.
+* Improve RoundRobin TTL compaction, which is going to be the same as normal RoundRobin compaction to move the compaction cursor.
+* Fix a small CPU regression caused by a change that UserComparatorWrapper was made Customizable, because Customizable itself has small CPU overhead for initialization.
+* Fixed an iterator performance regression for delete range users when scanning through a consecutive sequence of range tombstones (#10877).
 
 ### Behavior Changes
 * Sanitize min_write_buffer_number_to_merge to 1 if atomic flush is enabled to prevent unexpected data loss when WAL is disabled in a multi-column-family setting (#10773).
 
-## 7.7.1 (09/26/2022)
-### Bug Fixes
-* Fixed an optimistic transaction validation bug caused by DBImpl::GetLatestSequenceForKey() returning non-latest seq for merge (#10724).
-* Fixed a bug in iterator refresh which could segfault for DeleteRange users (#10739).
+### Public API changes
+* Make kXXH3 checksum the new default, because it is faster on common hardware, especially with kCRC32c affected by a performance bug in some versions of clang (https://github.com/facebook/rocksdb/issues/9891). DBs written with this new setting can be read by RocksDB 6.27 and newer.
+* Refactor the classes, APIs and data structures for block cache tracing to allow a user provided trace writer to be used. Introduced an abstract BlockCacheTraceWriter class that takes a structured BlockCacheTraceRecord. The BlockCacheTraceWriter implementation can then format and log the record in whatever way it sees fit. The default BlockCacheTraceWriterImpl does file tracing using a user provided TraceWriter. More details in rocksdb/includb/block_cache_trace_writer.h.
 
 ## 7.7.0 (09/18/2022)
 ### Bug Fixes
@@ -49,10 +65,6 @@
 * Fix a bug in key range overlap checking with concurrent compactions when user-defined timestamp is enabled. User-defined timestamps should be EXCLUDED when checking if two ranges overlap.
 * Fixed a bug where the blob cache prepopulating logic did not consider the secondary cache (see #10603).
 * Fixed the rocksdb.num.sst.read.per.level, rocksdb.num.index.and.filter.blocks.read.per.level and rocksdb.num.level.read.per.multiget stats in the MultiGet coroutines
-* Fix a bug in io_uring_prep_cancel in AbortIO API for posix which expects sqe->addr to match with read request submitted and wrong paramter was being passed.
-* Fixed a regression in iterator performance when the entire DB is a single memtable introduced in #10449. The fix is in #10705 and #10716.
-* Fix a bug in io_uring_prep_cancel in AbortIO API for posix which expects sqe->addr to match with read request submitted and wrong paramter was being passed.
-* Fixed a regression in iterator performance when the entire DB is a single memtable introduced in #10449. The fix is in #10705 and #10716.
 
 ### Public API changes
 * Add `rocksdb_column_family_handle_get_id`, `rocksdb_column_family_handle_get_name` to get name, id of column family in C API
