@@ -394,9 +394,12 @@ class Repairer {
     auto cf_mems = new ColumnFamilyMemTablesImpl(vset_.GetColumnFamilySet());
 
     // Read all the records and add to a memtable
+    const UnorderedMap<uint32_t, size_t>& running_ts_sz =
+        vset_.GetRunningColumnFamiliesTimestampSize();
     std::string scratch;
     Slice record;
     WriteBatch batch;
+
     int counter = 0;
     while (reader.ReadRecord(&record, &scratch)) {
       if (record.size() < WriteBatchInternal::kHeader) {
@@ -406,8 +409,15 @@ class Repairer {
       }
       Status record_status = WriteBatchInternal::SetContents(&batch, record);
       if (record_status.ok()) {
-        record_status =
-            WriteBatchInternal::InsertInto(&batch, cf_mems, nullptr, nullptr);
+        const UnorderedMap<uint32_t, size_t>& record_ts_sz =
+            reader.GetRecordedTimestampSize();
+        record_status = HandleWriteBatchTimestampSizeDifference(
+            &batch, running_ts_sz, record_ts_sz,
+            TimestampSizeConsistencyMode::kVerifyConsistency);
+        if (record_status.ok()) {
+          record_status =
+              WriteBatchInternal::InsertInto(&batch, cf_mems, nullptr, nullptr);
+        }
       }
       if (record_status.ok()) {
         counter += WriteBatchInternal::Count(&batch);
@@ -550,6 +560,8 @@ class Repairer {
             AddColumnFamily(props->column_family_name, t->column_family_id);
       }
       t->meta.oldest_ancester_time = props->creation_time;
+      t->meta.user_defined_timestamps_persisted =
+          static_cast<bool>(props->user_defined_timestamps_persisted);
     }
     if (status.ok()) {
       uint64_t tail_size = 0;
@@ -693,7 +705,8 @@ class Repairer {
             table->meta.oldest_ancester_time, table->meta.file_creation_time,
             table->meta.epoch_number, table->meta.file_checksum,
             table->meta.file_checksum_func_name, table->meta.unique_id,
-            table->meta.compensated_range_deletion_size, table->meta.tail_size);
+            table->meta.compensated_range_deletion_size, table->meta.tail_size,
+            table->meta.user_defined_timestamps_persisted);
       }
       s = dummy_version_builder.Apply(&dummy_edit);
       if (s.ok()) {

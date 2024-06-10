@@ -3097,7 +3097,7 @@ class ModelDB : public DB {
       const ColumnFamilyOptions& /*options*/,
       const std::string& /*column_family_name*/,
       const ImportColumnFamilyOptions& /*import_options*/,
-      const ExportImportFilesMetaData& /*metadata*/,
+      const std::vector<const ExportImportFilesMetaData*>& /*metadatas*/,
       ColumnFamilyHandle** /*handle*/) override {
     return Status::NotSupported("Not implemented.");
   }
@@ -3263,6 +3263,11 @@ class ModelDB : public DB {
   void EnableManualCompaction() override { return; }
 
   void DisableManualCompaction() override { return; }
+
+  virtual Status WaitForCompact(
+      const WaitForCompactOptions& /* wait_for_compact_options */) override {
+    return Status::OK();
+  }
 
   using DB::NumberLevels;
   int NumberLevels(ColumnFamilyHandle* /*column_family*/) override { return 1; }
@@ -5267,6 +5272,7 @@ TEST_F(DBTest, DynamicCompactionOptions) {
   const uint64_t k1MB = 1 << 20;
   const uint64_t k4KB = 1 << 12;
   Options options;
+  options.level_compaction_dynamic_level_bytes = false;
   options.env = env_;
   options.create_if_missing = true;
   options.compression = kNoCompression;
@@ -6896,16 +6902,16 @@ TEST_F(DBTest, RowCache) {
   options.statistics = ROCKSDB_NAMESPACE::CreateDBStatistics();
   LRUCacheOptions cache_options;
   cache_options.capacity = 8192;
-  options.row_cache = cache_options.MakeSharedGeneralCache();
+  options.row_cache = cache_options.MakeSharedRowCache();
   // BEGIN check that Cache classes as aliases of each other.
-  // Currently, GeneralCache and BlockCache are aliases for Cache.
+  // Currently, RowCache and BlockCache are aliases for Cache.
   // This is expected to change (carefully, intentionally)
-  std::shared_ptr<GeneralCache> general_cache = options.row_cache;
-  std::shared_ptr<Cache> cache = general_cache;
-  std::shared_ptr<BlockCache> block_cache = general_cache;
-  general_cache = cache;
+  std::shared_ptr<RowCache> row_cache = options.row_cache;
+  std::shared_ptr<Cache> cache = row_cache;
+  std::shared_ptr<BlockCache> block_cache = row_cache;
+  row_cache = cache;
   block_cache = cache;
-  general_cache = block_cache;
+  row_cache = block_cache;
   cache = block_cache;
   // END check that Cache classes as aliases of each other.
   DestroyAndReopen(options);
