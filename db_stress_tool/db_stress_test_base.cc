@@ -380,7 +380,7 @@ void StressTest::FinishInitDb(SharedState* shared) {
 
   if (FLAGS_enable_compaction_filter) {
     auto* compaction_filter_factory =
-        reinterpret_cast<DbStressCompactionFilterFactory*>(
+        static_cast<DbStressCompactionFilterFactory*>(
             options_.compaction_filter_factory.get());
     assert(compaction_filter_factory);
     // This must be called only after any potential `SharedState::Restore()` has
@@ -2701,7 +2701,7 @@ void StressTest::Open(SharedState* shared, bool reopen) {
     exit(1);
   }
   if (FLAGS_prefix_size != 0 && FLAGS_rep_factory != kHashSkipList) {
-    fprintf(stderr,
+    fprintf(stdout,
             "WARNING: prefix_size is non-zero but "
             "memtablerep != prefix_hash\n");
   }
@@ -3352,7 +3352,7 @@ void InitializeOptionsFromFlags(
         FLAGS_compression_use_zstd_dict_trainer;
   } else if (!FLAGS_compression_use_zstd_dict_trainer) {
     fprintf(
-        stderr,
+        stdout,
         "WARNING: use_zstd_dict_trainer is false but zstd finalizeDictionary "
         "cannot be used because ZSTD 1.4.5+ is not linked with the binary."
         " zstd dictionary trainer will be used.\n");

@@ -2330,7 +2330,7 @@ TEST_F(DBTest2, MaxCompactionBytesTest) {
 }
 
 static void UniqueIdCallback(void* arg) {
-  int* result = reinterpret_cast<int*>(arg);
+  int* result = static_cast<int*>(arg);
   if (*result == -1) {
     *result = 0;
   }
@@ -4161,7 +4161,7 @@ TEST_F(DBTest2, LiveFilesOmitObsoleteFiles) {
     ASSERT_OK(env_->FileExists(LogFileName(dbname_, log_file->LogNumber())));
   }
 
-  ASSERT_OK(db_->EnableFileDeletions(/*force=*/false));
+  ASSERT_OK(db_->EnableFileDeletions());
   ROCKSDB_NAMESPACE::SyncPoint::GetInstance()->DisableProcessing();
 }
 
@@ -4242,7 +4242,7 @@ class TraceExecutionResultHandler : public TraceRecordResult::Handler {
   TraceExecutionResultHandler() = default;
   ~TraceExecutionResultHandler() override = default;
 
-  virtual Status Handle(const StatusOnlyTraceExecutionResult& result) override {
+  Status Handle(const StatusOnlyTraceExecutionResult& result) override {
     if (result.GetStartTimestamp() > result.GetEndTimestamp()) {
       return Status::InvalidArgument("Invalid timestamps.");
     }
@@ -4260,8 +4260,7 @@ class TraceExecutionResultHandler : public TraceRecordResult::Handler {
     return Status::OK();
   }
 
-  virtual Status Handle(
-      const SingleValueTraceExecutionResult& result) override {
+  Status Handle(const SingleValueTraceExecutionResult& result) override {
     if (result.GetStartTimestamp() > result.GetEndTimestamp()) {
       return Status::InvalidArgument("Invalid timestamps.");
     }
@@ -4279,8 +4278,7 @@ class TraceExecutionResultHandler : public TraceRecordResult::Handler {
     return Status::OK();
   }
 
-  virtual Status Handle(
-      const MultiValuesTraceExecutionResult& result) override {
+  Status Handle(const MultiValuesTraceExecutionResult& result) override {
     if (result.GetStartTimestamp() > result.GetEndTimestamp()) {
       return Status::InvalidArgument("Invalid timestamps.");
     }
@@ -4300,7 +4298,7 @@ class TraceExecutionResultHandler : public TraceRecordResult::Handler {
     return Status::OK();
   }
 
-  virtual Status Handle(const IteratorTraceExecutionResult& result) override {
+  Status Handle(const IteratorTraceExecutionResult& result) override {
     if (result.GetStartTimestamp() > result.GetEndTimestamp()) {
       return Status::InvalidArgument("Invalid timestamps.");
     }
@@ -6474,7 +6472,7 @@ class RenameCurrentTest : public DBTestBase,
   void SetupSyncPoints() {
     SyncPoint::GetInstance()->DisableProcessing();
     SyncPoint::GetInstance()->SetCallBack(sync_point_, [&](void* arg) {
-      Status* s = reinterpret_cast<Status*>(arg);
+      Status* s = static_cast<Status*>(arg);
       assert(s);
       *s = Status::IOError("Injected IO error.");
     });
@@ -7176,7 +7174,7 @@ TEST_F(DBTest2, PointInTimeRecoveryWithIOErrorWhileReadingWal) {
       "LogReader::ReadMore:AfterReadFile", [&](void* arg) {
         if (should_inject_error) {
           ASSERT_NE(nullptr, arg);
-          *reinterpret_cast<Status*>(arg) = Status::IOError("Injected IOError");
+          *static_cast<Status*>(arg) = Status::IOError("Injected IOError");
         }
       });
   SyncPoint::GetInstance()->EnableProcessing();

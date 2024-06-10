@@ -582,7 +582,11 @@ class NonBatchedOpsStressTest : public StressTest {
     int error_count = 0;
     // Do a consistency check between Get and MultiGet. Don't do it too
     // often as it will slow db_stress down
-    bool do_consistency_check = thread->rand.OneIn(4);
+    //
+    // CompactionFilter can make snapshot non-repeatable by removing keys
+    // protected by snapshot
+    bool do_consistency_check =
+        !FLAGS_enable_compaction_filter && thread->rand.OneIn(4);
 
     ReadOptions readoptionscopy = read_opts;
 
@@ -930,7 +934,7 @@ class NonBatchedOpsStressTest : public StressTest {
     bool read_older_ts = MaybeUseOlderTimestampForPointLookup(
         thread, read_ts_str, read_ts_slice, read_opts_copy);
 
-    const Status s = db_->GetEntity(read_opts, cfh, key, &from_db);
+    const Status s = db_->GetEntity(read_opts_copy, cfh, key, &from_db);
 
     int error_count = 0;
 
@@ -953,7 +957,7 @@ class NonBatchedOpsStressTest : public StressTest {
 
       thread->stats.AddGets(1, 1);
 
-      if (!FLAGS_skip_verifydb) {
+      if (!FLAGS_skip_verifydb && !read_older_ts) {
         const WideColumns& columns = from_db.columns();
         ExpectedValue expected =
             shared->Get(rand_column_families[0], rand_keys[0]);
@@ -1071,7 +1075,10 @@ class NonBatchedOpsStressTest : public StressTest {
       fault_fs_guard->DisableErrorInjection();
     }
 
-    const bool check_get_entity = !error_count && thread->rand.OneIn(4);
+    // CompactionFilter can make snapshot non-repeatable by removing keys
+    // protected by snapshot
+    const bool check_get_entity = !FLAGS_enable_compaction_filter &&
+                                  !error_count && thread->rand.OneIn(4);
 
     for (size_t i = 0; i < num_keys; ++i) {
       const Status& s = statuses[i];

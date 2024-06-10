@@ -115,7 +115,6 @@ set(JAVA_MAIN_CLASSES
   src/main/java/org/rocksdb/AbstractTransactionNotifier.java
   src/main/java/org/rocksdb/AbstractWalFilter.java
   src/main/java/org/rocksdb/AbstractWriteBatch.java
-  src/main/java/org/rocksdb/AccessHint.java
   src/main/java/org/rocksdb/AdvancedColumnFamilyOptionsInterface.java
   src/main/java/org/rocksdb/AdvancedMutableColumnFamilyOptionsInterface.java
   src/main/java/org/rocksdb/BackgroundErrorReason.java
@@ -809,6 +808,7 @@ add_custom_target(rocksdb_javadocs_jar ALL
   COMMAND ${Java_JAR_EXECUTABLE} cvf ${CMAKE_CURRENT_BINARY_DIR}/${ROCKSDB_JAVADOC_JAR} -C ${CMAKE_CURRENT_BINARY_DIR}/javadoc/rocksdb .
   BYPRODUCTS ${CMAKE_CURRENT_BINARY_DIR}/${ROCKSDB_JAVADOC_JAR}
   WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+  DEPENDS rocksdb_javadoc
 )
 
 # Sources Jar
@@ -819,7 +819,51 @@ add_custom_target(rocksdb_sources_jar ALL
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
 )
 
+set(bitness 32)
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(bitness 64)
+endif()
 
+if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
+    set_target_properties(
+            ${ROCKSDBJNI_STATIC_LIB}
+            PROPERTIES
+            OUTPUT_NAME librocksdbjni-win${bitness}
+    )
+    set(ROCKSDB_JAR rocksdbjni-${CMAKE_PROJECT_VERSION}-win${bitness}.jar)
+elseif(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
+    set_target_properties(
+            ${ROCKSDBJNI_STATIC_LIB}
+            PROPERTIES
+            OUTPUT_NAME "rocksdbjni-linux${bitness}"
+    )
+    set(ROCKSDB_JAR rocksdbjni-${CMAKE_PROJECT_VERSION}-linux${bitness}.jar)
+elseif(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    set_target_properties(
+            ${ROCKSDBJNI_STATIC_LIB}
+            PROPERTIES
+            OUTPUT_NAME rocksdbjni-osx-${CMAKE_SYSTEM_PROCESSOR}
+    )
+    set_target_properties(
+            ${ROCKSDBJNI_STATIC_LIB}
+            PROPERTIES
+            SUFFIX ".jnilib"
+    )
+    set(ROCKSDB_JAR rocksdbjni-${CMAKE_PROJECT_VERSION}-osx.jar)
+else()
+    set(ROCKSDB_JAR rocksdb-${CMAKE_PROJECT_VERSION}.jar)
+endif()
+
+get_target_property(ROCKS_JAR_FILE rocksdbjni_classes JAR_FILE)
+
+add_custom_target(rocksdbjava ALL
+        COMMAND ${CMAKE_COMMAND} -E copy ${ROCKS_JAR_FILE} ${CMAKE_CURRENT_BINARY_DIR}/${ROCKSDB_JAR}
+        COMMAND ${Java_JAR_EXECUTABLE} -uf ${CMAKE_CURRENT_BINARY_DIR}/${ROCKSDB_JAR} -C $<TARGET_FILE_DIR:${ROCKSDBJNI_STATIC_LIB}> $<TARGET_FILE_NAME:${ROCKSDBJNI_STATIC_LIB}>
+        COMMAND ${Java_JAR_EXECUTABLE} -uf ${CMAKE_CURRENT_BINARY_DIR}/${ROCKSDB_JAR} -C ${CMAKE_CURRENT_SOURCE_DIR} HISTORY-JAVA.md
+        DEPENDS ${ROCKSDBJNI_STATIC_LIB} rocksdbjni_classes
+        BYPRODUCTS ${ROCKSDB_JAR}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        )
 
 enable_testing()
 get_target_property(ROCKSDBJNI_CLASSES_TEST_JAR_FILE rocksdbjni_test_classes JAR_FILE)
@@ -827,7 +871,7 @@ foreach (CLAZZ ${JAVA_TEST_RUNNING_CLASSES})
   if(${CMAKE_SYSTEM_NAME} MATCHES "Windows")
     add_test(
       NAME jtest_${CLAZZ}
-      COMMAND ${Java_JAVA_EXECUTABLE} ${JVMARGS} -ea -Xcheck:jni -Djava.library.path=${PROJECT_BINARY_DIR}/java/${CMAKE_BUILD_TYPE} -classpath ${JAVA_RUN_TESTCLASSPATH}$<SEMICOLON>${ROCKSDBJNI_CLASSES_TEST_JAR_FILE} org.rocksdb.test.RocksJunitRunner ${CLAZZ}
+            COMMAND ${Java_JAVA_EXECUTABLE} ${JVMARGS} -ea -Xcheck:jni -Djava.library.path=${PROJECT_BINARY_DIR}/java/${CMAKE_BUILD_TYPE} -classpath ${CMAKE_CURRENT_BINARY_DIR}/${ROCKSDB_JAR}$<SEMICOLON>${JAVA_RUN_TESTCLASSPATH}$<SEMICOLON>${ROCKSDBJNI_CLASSES_TEST_JAR_FILE} org.rocksdb.test.RocksJunitRunner ${CLAZZ}
     )
   else()
     add_test(
