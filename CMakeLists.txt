@@ -41,10 +41,10 @@ endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/modules/")
 
+option(WITH_JEMALLOC "build with JeMalloc" OFF)
 if(MSVC)
   include(${CMAKE_CURRENT_SOURCE_DIR}/thirdparty.inc)
 else()
-  option(WITH_JEMALLOC "build with JeMalloc" OFF)
   if(CMAKE_SYSTEM_NAME MATCHES "FreeBSD")
     # FreeBSD has jemaloc as default malloc
     # but it does not have all the jemalloc files in include/...
@@ -574,6 +574,12 @@ if(WIN32)
     port/win/win_logger.cc
     port/win/win_thread.cc
     port/win/xpress_win.cc)
+	
+if(WITH_JEMALLOC)
+  list(APPEND SOURCES
+    port/win/win_jemalloc.cc)
+endif()
+	
 else()
   list(APPEND SOURCES
     port/port_posix.cc
@@ -713,6 +719,7 @@ if(WITH_TESTS)
         db/corruption_test.cc
         db/cuckoo_table_db_test.cc
         db/db_basic_test.cc
+        db/db_blob_index_test.cc
         db/db_block_cache_test.cc
         db/db_bloom_filter_test.cc
         db/db_compaction_filter_test.cc
@@ -778,6 +785,7 @@ if(WITH_TESTS)
         options/options_test.cc
         table/block_based_filter_block_test.cc
         table/block_test.cc
+        table/cleanable_test.cc
         table/cuckoo_table_builder_test.cc
         table/cuckoo_table_reader_test.cc
         table/full_filter_block_test.cc
