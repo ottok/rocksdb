@@ -21,7 +21,7 @@
 #include <cstring>
 #include "status.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 class IOStatus : public Status {
  public:
@@ -209,9 +209,7 @@ inline IOStatus& IOStatus::operator=(IOStatus&& s)
     subcode_ = std::move(s.subcode_);
     s.subcode_ = kNone;
     retryable_ = s.retryable_;
-    retryable_ = false;
     data_loss_ = s.data_loss_;
-    data_loss_ = false;
     scope_ = s.scope_;
     scope_ = kIOErrorScopeFileSystem;
     delete[] state_;
@@ -229,4 +227,19 @@ inline bool IOStatus::operator!=(const IOStatus& rhs) const {
   return !(*this == rhs);
 }
 
-}  // namespace rocksdb
+inline IOStatus status_to_io_status(Status&& status) {
+  if (status.ok()) {
+    // Fast path
+    return IOStatus::OK();
+  } else {
+    const char* state = status.getState();
+    if (state) {
+      return IOStatus(status.code(), status.subcode(),
+                      Slice(state, strlen(status.getState()) + 1), Slice());
+    } else {
+      return IOStatus(status.code(), status.subcode());
+    }
+  }
+}
+
+}  // namespace ROCKSDB_NAMESPACE

@@ -15,7 +15,7 @@
 #include "table/sst_file_writer_collectors.h"
 #include "test_util/sync_point.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 const std::string ExternalSstFilePropertyNames::kVersion =
     "rocksdb.external_sst_file.version";
@@ -150,7 +150,7 @@ struct SstFileWriter::Rep {
     if (bytes_since_last_fadvise > kFadviseTrigger || closing) {
       TEST_SYNC_POINT_CALLBACK("SstFileWriter::Rep::InvalidatePageCache",
                                &(bytes_since_last_fadvise));
-      // Tell the OS that we dont need this file in page cache
+      // Tell the OS that we don't need this file in page cache
       file_writer->InvalidateCache(0, 0);
       last_fadvise_size = builder->FileSize();
     }
@@ -190,20 +190,21 @@ Status SstFileWriter::Open(const std::string& file_path) {
 
   CompressionType compression_type;
   CompressionOptions compression_opts;
-  if (r->ioptions.bottommost_compression != kDisableCompressionOption) {
-    compression_type = r->ioptions.bottommost_compression;
-    if (r->ioptions.bottommost_compression_opts.enabled) {
-      compression_opts = r->ioptions.bottommost_compression_opts;
+  if (r->mutable_cf_options.bottommost_compression !=
+      kDisableCompressionOption) {
+    compression_type = r->mutable_cf_options.bottommost_compression;
+    if (r->mutable_cf_options.bottommost_compression_opts.enabled) {
+      compression_opts = r->mutable_cf_options.bottommost_compression_opts;
     } else {
-      compression_opts = r->ioptions.compression_opts;
+      compression_opts = r->mutable_cf_options.compression_opts;
     }
   } else if (!r->ioptions.compression_per_level.empty()) {
     // Use the compression of the last level if we have per level compression
     compression_type = *(r->ioptions.compression_per_level.rbegin());
-    compression_opts = r->ioptions.compression_opts;
+    compression_opts = r->mutable_cf_options.compression_opts;
   } else {
     compression_type = r->mutable_cf_options.compression;
-    compression_opts = r->ioptions.compression_opts;
+    compression_opts = r->mutable_cf_options.compression_opts;
   }
   uint64_t sample_for_compression =
       r->mutable_cf_options.sample_for_compression;
@@ -316,4 +317,4 @@ uint64_t SstFileWriter::FileSize() {
 }
 #endif  // !ROCKSDB_LITE
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE

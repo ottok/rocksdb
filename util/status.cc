@@ -15,7 +15,7 @@
 #include <cstring>
 #include "port/port.h"
 
-namespace rocksdb {
+namespace ROCKSDB_NAMESPACE {
 
 const char* Status::CopyState(const char* state) {
 #ifdef OS_WIN
@@ -52,6 +52,7 @@ static const char* msgs[static_cast<int>(Status::kMaxSubCode)] = {
     "Insufficient capacity for merge operands",
     // kManualCompactionPaused
     "Manual compaction paused",
+    " (overwritten)",  // kOverwritten, subcode of OK
 };
 
 Status::Status(Code _code, SubCode _subcode, const Slice& msg,
@@ -140,4 +141,4 @@ std::string Status::ToString() const {
   return result;
 }
 
-}  // namespace rocksdb
+}  // namespace ROCKSDB_NAMESPACE
