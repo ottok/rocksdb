@@ -123,6 +123,22 @@ Status CheckCompressionSupported(const ColumnFamilyOptions& cf_options) {
           " is not linked with the binary.");
     }
   }
+  if (cf_options.compression_opts.zstd_max_train_bytes > 0) {
+    if (!CompressionTypeSupported(CompressionType::kZSTD)) {
+      // Dictionary trainer is available since v0.6.1, but ZSTD was marked
+      // stable only since v0.8.0. For now we enable the feature in stable
+      // versions only.
+      return Status::InvalidArgument(
+          "zstd dictionary trainer cannot be used because " +
+          CompressionTypeToString(CompressionType::kZSTD) +
+          " is not linked with the binary.");
+    }
+    if (cf_options.compression_opts.max_dict_bytes == 0) {
+      return Status::InvalidArgument(
+          "The dictionary size limit (`CompressionOptions::max_dict_bytes`) "
+          "should be nonzero if we're using zstd's dictionary generator.");
+    }
+  }
   return Status::OK();
 }
 
@@ -328,12 +344,13 @@ void SuperVersionUnrefHandle(void* ptr) {
   // When latter happens, we are in ~ColumnFamilyData(), no get should happen as
   // well.
   SuperVersion* sv = static_cast<SuperVersion*>(ptr);
-  if (sv->Unref()) {
-    sv->db_mutex->Lock();
-    sv->Cleanup();
-    sv->db_mutex->Unlock();
-    delete sv;
-  }
+  bool was_last_ref __attribute__((__unused__));
+  was_last_ref = sv->Unref();
+  // Thread-local SuperVersions can't outlive ColumnFamilyData::super_version_.
+  // This is important because we can't do SuperVersion cleanup here.
+  // That would require locking DB mutex, which would deadlock because
+  // SuperVersionUnrefHandle is called with locked ThreadLocalPtr mutex.
+  assert(!was_last_ref);
 }
 }  // anonymous namespace
 
@@ -369,7 +386,8 @@ ColumnFamilyData::ColumnFamilyData(
       pending_flush_(false),
       pending_compaction_(false),
       prev_compaction_needed_bytes_(0),
-      allow_2pc_(db_options.allow_2pc) {
+      allow_2pc_(db_options.allow_2pc),
+      last_memtable_id_(0) {
   Ref();
 
   // Convert user defined table properties collector factories to internal ones.
@@ -949,6 +967,12 @@ void ColumnFamilyData::InstallSuperVersion(
       RecalculateWriteStallConditions(mutable_cf_options);
 
   if (old_superversion != nullptr) {
+    // Reset SuperVersions cached in thread local storage.
+    // This should be done before old_superversion->Unref(). That's to ensure
+    // that local_sv_ never holds the last reference to SuperVersion, since
+    // it has no means to safely do SuperVersion cleanup.
+    ResetThreadLocalSuperVersions();
+
     if (old_superversion->mutable_cf_options.write_buffer_size !=
         mutable_cf_options.write_buffer_size) {
       mem_->UpdateWriteBufferSize(mutable_cf_options.write_buffer_size);
@@ -964,9 +988,6 @@ void ColumnFamilyData::InstallSuperVersion(
       sv_context->superversions_to_free.push_back(old_superversion);
     }
   }
-
-  // Reset SuperVersions cached in thread local storage
-  ResetThreadLocalSuperVersions();
 }
 
 void ColumnFamilyData::ResetThreadLocalSuperVersions() {
@@ -978,10 +999,12 @@ void ColumnFamilyData::ResetThreadLocalSuperVersions() {
       continue;
     }
     auto sv = static_cast<SuperVersion*>(ptr);
-    if (sv->Unref()) {
-      sv->Cleanup();
-      delete sv;
-    }
+    bool was_last_ref __attribute__((__unused__));
+    was_last_ref = sv->Unref();
+    // sv couldn't have been the last reference because
+    // ResetThreadLocalSuperVersions() is called before
+    // unref'ing super_version_.
+    assert(!was_last_ref);
   }
 }
 
@@ -998,6 +1021,24 @@ Status ColumnFamilyData::SetOptions(
   return s;
 }
 #endif  // ROCKSDB_LITE
+
+// REQUIRES: DB mutex held
+Env::WriteLifeTimeHint ColumnFamilyData::CalculateSSTWriteHint(int level) {
+  if (initial_cf_options_.compaction_style != kCompactionStyleLevel) {
+    return Env::WLTH_NOT_SET;
+  }
+  if (level == 0) {
+    return Env::WLTH_MEDIUM;
+  }
+  int base_level = current_->storage_info()->base_level();
+
+  // L1: medium, L2: long, ...
+  if (level - base_level >= 2) {
+    return Env::WLTH_EXTREME;
+  }
+  return static_cast<Env::WriteLifeTimeHint>(level - base_level +
+                            static_cast<int>(Env::WLTH_MEDIUM));
+}
 
 ColumnFamilySet::ColumnFamilySet(const std::string& dbname,
                                  const ImmutableDBOptions* db_options,

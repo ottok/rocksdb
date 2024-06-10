@@ -169,7 +169,7 @@ if(PORTABLE)
   # MSVC does not need a separate compiler flag to enable SSE4.2; if nmmintrin.h
   # is available, it is available by default.
   if(FORCE_SSE42 AND NOT MSVC)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse4.2")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse4.2 -mpclmul")
   endif()
 else()
   if(MSVC)
@@ -181,13 +181,18 @@ endif()
 
 include(CheckCXXSourceCompiles)
 if(NOT MSVC)
-  set(CMAKE_REQUIRED_FLAGS "-msse4.2")
+  set(CMAKE_REQUIRED_FLAGS "-msse4.2 -mpclmul")
 endif()
 CHECK_CXX_SOURCE_COMPILES("
 #include <cstdint>
 #include <nmmintrin.h>
+#include <wmmintrin.h>
 int main() {
   volatile uint32_t x = _mm_crc32_u32(0, 0);
+  const auto a = _mm_set_epi64x(0, 0);
+  const auto b = _mm_set_epi64x(0, 0);
+  const auto c = _mm_clmulepi64_si128(a, b, 0x00);
+  auto d = _mm_cvtsi128_si64(c);
 }
 " HAVE_SSE42)
 unset(CMAKE_REQUIRED_FLAGS)
@@ -247,6 +252,27 @@ if(WITH_UBSAN)
   if(WITH_JEMALLOC)
     message(FATAL "UBSAN does not work well with JeMalloc")
   endif()
+endif()
+
+find_package(gflags)
+if(gflags_FOUND)
+  add_definitions(-DGFLAGS=1)
+  include_directories(${gflags_INCLUDE_DIR})
+  list(APPEND THIRDPARTY_LIBS ${gflags_LIBRARIES})
+endif()
+
+find_package(NUMA)
+if(NUMA_FOUND)
+  add_definitions(-DNUMA)
+  include_directories(${NUMA_INCLUDE_DIR})
+  list(APPEND THIRDPARTY_LIBS ${NUMA_LIBRARIES})
+endif()
+
+find_package(TBB)
+if(TBB_FOUND)
+  add_definitions(-DTBB)
+  include_directories(${TBB_INCLUDE_DIR})
+  list(APPEND THIRDPARTY_LIBS ${TBB_LIBRARIES})
 endif()
 
 # Used to run CI build and tests so we can run faster
@@ -316,11 +342,8 @@ if(NOT WIN32)
 endif()
 
 option(WITH_FALLOCATE "build with fallocate" ON)
-
 if(WITH_FALLOCATE)
-  set(CMAKE_REQUIRED_FLAGS ${CMAKE_C_FLAGS})
-  include(CheckCSourceCompiles)
-  CHECK_C_SOURCE_COMPILES("
+  CHECK_CXX_SOURCE_COMPILES("
 #include <fcntl.h>
 #include <linux/falloc.h>
 int main() {
@@ -333,10 +356,36 @@ int main() {
   endif()
 endif()
 
-include(CheckFunctionExists)
-CHECK_FUNCTION_EXISTS(malloc_usable_size HAVE_MALLOC_USABLE_SIZE)
+CHECK_CXX_SOURCE_COMPILES("
+#include <fcntl.h>
+int main() {
+  int fd = open(\"/dev/null\", 0);
+  sync_file_range(fd, 0, 1024, SYNC_FILE_RANGE_WRITE);
+}
+" HAVE_SYNC_FILE_RANGE_WRITE)
+if(HAVE_SYNC_FILE_RANGE_WRITE)
+  add_definitions(-DROCKSDB_RANGESYNC_PRESENT)
+endif()
+
+CHECK_CXX_SOURCE_COMPILES("
+#include <pthread.h>
+int main() {
+  (void) PTHREAD_MUTEX_ADAPTIVE_NP;
+}
+" HAVE_PTHREAD_MUTEX_ADAPTIVE_NP)
+if(HAVE_PTHREAD_MUTEX_ADAPTIVE_NP)
+  add_definitions(-DROCKSDB_PTHREAD_ADAPTIVE_MUTEX)
+endif()
+
+include(CheckCXXSymbolExists)
+check_cxx_symbol_exists(malloc_usable_size malloc.h HAVE_MALLOC_USABLE_SIZE)
 if(HAVE_MALLOC_USABLE_SIZE)
   add_definitions(-DROCKSDB_MALLOC_USABLE_SIZE)
+endif()
+
+check_cxx_symbol_exists(sched_getcpu sched.h HAVE_SCHED_GETCPU)
+if(HAVE_SCHED_GETCPU)
+  add_definitions(-DROCKSDB_SCHED_GETCPU_PRESENT)
 endif()
 
 include_directories(${PROJECT_SOURCE_DIR})
@@ -564,7 +613,7 @@ if(HAVE_SSE42 AND NOT FORCE_SSE42)
   if(NOT MSVC)
 set_source_files_properties(
   util/crc32c.cc
-      PROPERTIES COMPILE_FLAGS "-msse4.2")
+      PROPERTIES COMPILE_FLAGS "-msse4.2 -mpclmul")
   endif()
 endif()
 
