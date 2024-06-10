@@ -77,7 +77,8 @@ class CompressedSecondaryCache : public SecondaryCache {
   const char* Name() const override { return "CompressedSecondaryCache"; }
 
   Status Insert(const Slice& key, Cache::ObjectPtr value,
-                const Cache::CacheItemHelper* helper) override;
+                const Cache::CacheItemHelper* helper,
+                bool force_insert) override;
 
   std::unique_ptr<SecondaryCacheResultHandle> Lookup(
       const Slice& key, const Cache::CacheItemHelper* helper,
@@ -135,6 +136,7 @@ class CompressedSecondaryCache : public SecondaryCache {
   CompressedSecondaryCacheOptions cache_options_;
   mutable port::Mutex capacity_mutex_;
   std::shared_ptr<ConcurrentCacheReservationManager> cache_res_mgr_;
+  bool disable_cache_;
 };
 
 }  // namespace ROCKSDB_NAMESPACE

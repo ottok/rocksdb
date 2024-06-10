@@ -22,7 +22,8 @@ CompressedSecondaryCache::CompressedSecondaryCache(
       cache_options_(opts),
       cache_res_mgr_(std::make_shared<ConcurrentCacheReservationManager>(
           std::make_shared<CacheReservationManagerImpl<CacheEntryRole::kMisc>>(
-              cache_))) {}
+              cache_))),
+      disable_cache_(opts.capacity == 0) {}
 
 CompressedSecondaryCache::~CompressedSecondaryCache() {
   assert(cache_res_mgr_->GetTotalReservedCacheSize() == 0);
@@ -33,6 +34,10 @@ std::unique_ptr<SecondaryCacheResultHandle> CompressedSecondaryCache::Lookup(
     Cache::CreateContext* create_context, bool /*wait*/, bool advise_erase,
     bool& kept_in_sec_cache) {
   assert(helper);
+  if (disable_cache_) {
+    return nullptr;
+  }
+
   std::unique_ptr<SecondaryCacheResultHandle> handle;
   kept_in_sec_cache = false;
   Cache::Handle* lru_handle = cache_->Lookup(key);
@@ -109,20 +114,27 @@ std::unique_ptr<SecondaryCacheResultHandle> CompressedSecondaryCache::Lookup(
 
 Status CompressedSecondaryCache::Insert(const Slice& key,
                                         Cache::ObjectPtr value,
-                                        const Cache::CacheItemHelper* helper) {
+                                        const Cache::CacheItemHelper* helper,
+                                        bool force_insert) {
   if (value == nullptr) {
     return Status::InvalidArgument();
   }
 
-  Cache::Handle* lru_handle = cache_->Lookup(key);
+  if (disable_cache_) {
+    return Status::OK();
+  }
+
   auto internal_helper = GetHelper(cache_options_.enable_custom_split_merge);
-  if (lru_handle == nullptr) {
-    PERF_COUNTER_ADD(compressed_sec_cache_insert_dummy_count, 1);
-    // Insert a dummy handle if the handle is evicted for the first time.
-    return cache_->Insert(key, /*obj=*/nullptr, internal_helper,
-                          /*charge=*/0);
-  } else {
-    cache_->Release(lru_handle, /*erase_if_last_ref=*/false);
+  if (!force_insert) {
+    Cache::Handle* lru_handle = cache_->Lookup(key);
+    if (lru_handle == nullptr) {
+      PERF_COUNTER_ADD(compressed_sec_cache_insert_dummy_count, 1);
+      // Insert a dummy handle if the handle is evicted for the first time.
+      return cache_->Insert(key, /*obj=*/nullptr, internal_helper,
+                            /*charge=*/0);
+    } else {
+      cache_->Release(lru_handle, /*erase_if_last_ref=*/false);
+    }
   }
 
   size_t size = (*helper->size_cb)(value);
@@ -140,7 +152,8 @@ Status CompressedSecondaryCache::Insert(const Slice& key,
       !cache_options_.do_not_compress_roles.Contains(helper->role)) {
     PERF_COUNTER_ADD(compressed_sec_cache_uncompressed_bytes, size);
     CompressionOptions compression_opts;
-    CompressionContext compression_context(cache_options_.compression_type);
+    CompressionContext compression_context(cache_options_.compression_type,
+                                           compression_opts);
     uint64_t sample_for_compression{0};
     CompressionInfo compression_info(
         compression_opts, compression_context, CompressionDict::GetEmptyDict(),
@@ -182,6 +195,7 @@ Status CompressedSecondaryCache::SetCapacity(size_t capacity) {
   MutexLock l(&capacity_mutex_);
   cache_options_.capacity = capacity;
   cache_->SetCapacity(capacity);
+  disable_cache_ = capacity == 0;
   return Status::OK();
 }
 

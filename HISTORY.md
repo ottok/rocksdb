@@ -1,24 +1,67 @@
 # Rocksdb Change Log
 > NOTE: Entries for next release do not go here. Follow instructions in `unreleased_history/README.txt`
 
-## 8.5.4 (09/26/2023)
+## 8.6.7 (09/26/2023)
 ### Bug Fixes
 * Fixed a bug where compaction read under non direct IO still falls back to RocksDB internal prefetching after file system's prefetching returns non-OK status other than `Status::NotSupported()`
 
 ### Behavior Changes
 * For non direct IO, eliminate the file system prefetching attempt for compaction read when `Options::compaction_readahead_size` is 0
 
-## 8.5.3 (09/01/2023)
+## 8.6.6 (09/25/2023)
 ### Bug Fixes
-* Fixed a race condition in `GenericRateLimiter` that could cause it to stop granting requests
+* Fix a bug with atomic_flush=true that can cause DB to stuck after a flush fails (#11872).
+* Fix a bug where RocksDB (with atomic_flush=false) can delete output SST files of pending flushes when a previous concurrent flush fails (#11865). This can result in DB entering read-only state with error message like `IO error: No such file or directory: While open a file for random read: /tmp/rocksdbtest-501/db_flush_test_87732_4230653031040984171/000013.sst`.
+* When the compressed secondary cache capacity is reduced to 0, it should be completely disabled. Before this fix, inserts and lookups would still go to the backing `LRUCache` before returning, thus incurring locking overhead. With this fix, inserts and lookups are no-ops and do not add any overhead.
 
-## 8.5.2 (08/31/2023)
-### Bug fixes
+## 8.6.5 (09/15/2023)
+### Bug Fixes
+* Fixed a bug where `rocksdb.file.read.verify.file.checksums.micros` is not populated.
+
+## 8.6.4 (09/13/2023)
+### Public API changes
+* Add a column family option `default_temperature` that is used for file reading accounting purpose, such as io statistics, for files that don't have an explicitly set temperature.
+
+## 8.6.3 (09/12/2023)
+### Bug Fixes
+* Fix a bug where if there is an error reading from offset 0 of a file from L1+ and that the file is not the first file in the sorted run, data can be lost in compaction and read/scan can return incorrect results.
 * Fix a bug where iterator may return incorrect result for DeleteRange() users if there was an error reading from a file.
 
-## 8.5.1 (08/31/2023)
-### Bug fixes
-* Fix a bug where if there is an error reading from offset 0 of a file from L1+ and that the file is not the first file in the sorted run, data can be lost in compaction and read/scan can return incorrect results.
+## 8.6.2 (09/11/2023)
+### Bug Fixes
+* Add a fix for async_io where during seek, when reading a block for seeking a target key in a file without any readahead, the iterator aligned the read on a page boundary and reading more than necessary. This increased the storage read bandwidth usage.
+
+## 8.6.1 (08/30/2023)
+### Public API Changes
+* `Options::compaction_readahead_size` 's default value is changed from 0 to 2MB.
+
+### Behavior Changes
+* Compaction read performance will regress when `Options::compaction_readahead_size` is explicitly set to 0
+
+## 8.6.0 (08/18/2023)
+### New Features
+* Added enhanced data integrity checking on SST files with new format_version=6. Performance impact is very small or negligible. Previously if SST data was misplaced or re-arranged by the storage layer, it could pass block checksum with higher than 1 in 4 billion probability. With format_version=6, block checksums depend on what file they are in and location within the file. This way, misplaced SST data is no more likely to pass checksum verification than randomly corrupted data. Also in format_version=6, SST footers are checksum-protected.
+* Add a new feature to trim readahead_size during scans upto upper_bound when iterate_upper_bound is specified. It's enabled through ReadOptions.auto_readahead_size. Users must also specify ReadOptions.iterate_upper_bound.
+* RocksDB will compare the number of input keys to the number of keys processed after each compaction. Compaction will fail and report Corruption status if the verification fails. Option `compaction_verify_record_count` is introduced for this purpose and is enabled by default.
+* Add a CF option `bottommost_file_compaction_delay` to allow specifying the delay of bottommost level single-file compactions.
+* Add support to allow enabling / disabling user-defined timestamps feature for an existing column family in combination with the in-Memtable only feature.
+* Implement a new admission policy for the compressed secondary cache that admits blocks evicted from the primary cache with the hit bit set. This policy can be specified in TieredVolatileCacheOptions by setting the newly added adm_policy option.
+* Add a column family option `memtable_max_range_deletions` that limits the number of range deletions in a memtable. RocksDB will try to do an automatic flush after the limit is reached. (#11358)
+* Add PutEntity API in sst_file_writer
+* Add `timeout` in microsecond option to `WaitForCompactOptions` to allow timely termination of prolonged waiting in scenarios like recurring recoverable errors, such as out-of-space situations and continuous write streams that sustain ongoing flush and compactions
+* New statistics `rocksdb.file.read.{get|multiget|db.iterator|verify.checksum|verify.file.checksums}.micros` measure read time of block-based SST tables or blob files during db open, `Get()`, `MultiGet()`, using db iterator, `VerifyFileChecksums()` and `VerifyChecksum()`. They require stats level greater than `StatsLevel::kExceptDetailedTimers`.
+* Add close_db option to `WaitForCompactOptions` to call Close() after waiting is done.
+* Add a new compression option `CompressionOptions::checksum` for enabling ZSTD's checksum feature to detect corruption during decompression.
+
+### Public API Changes
+* Mark `Options::access_hint_on_compaction_start` related APIs as deprecated. See #11631 for alternative behavior.
+
+### Behavior Changes
+* Statistics `rocksdb.sst.read.micros` now includes time spent on multi read and async read into the file
+* For Universal Compaction users, periodic compaction (option `periodic_compaction_seconds`) will be set to 30 days by default if block based table is used.
+
+### Bug Fixes
+* Fix a bug in FileTTLBooster that can cause users with a large number of levels (more than 65) to see errors like "runtime error: shift exponent .. is too large.." (#11673).
 
 ## 8.5.0 (07/21/2023)
 ### Public API Changes
@@ -34,7 +77,6 @@
 
 ### Bug Fixes
 * Fix use_after_free bug in async_io MultiReads when underlying FS enabled kFSBuffer. kFSBuffer is when underlying FS pass their own buffer instead of using RocksDB scratch in FSReadRequest. Right now it's an experimental feature.
-* Fix a bug in FileTTLBooster that can cause users with a large number of levels (more than 65) to see errors like "runtime error: shift exponent .. is too large.." (#11673).
 
 ## 8.4.0 (06/26/2023)
 ### New Features
