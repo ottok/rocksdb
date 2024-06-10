@@ -27,14 +27,11 @@ enum CompactionStyle : char {
   // level based compaction style
   kCompactionStyleLevel = 0x0,
   // Universal compaction style
-  // Not supported in ROCKSDB_LITE.
   kCompactionStyleUniversal = 0x1,
   // FIFO compaction style
-  // Not supported in ROCKSDB_LITE
   kCompactionStyleFIFO = 0x2,
   // Disable background compaction. Compaction jobs are submitted
   // via CompactFiles().
-  // Not supported in ROCKSDB_LITE
   kCompactionStyleNone = 0x3,
 };
 
@@ -240,10 +237,10 @@ enum class CacheTier : uint8_t {
   kNonVolatileBlockTier = 0x01,
 };
 
-enum UpdateStatus {    // Return status For inplace update callback
-  UPDATE_FAILED   = 0, // Nothing to update
-  UPDATED_INPLACE = 1, // Value updated inplace
-  UPDATED         = 2, // No inplace update. Merged value set
+enum UpdateStatus {     // Return status For inplace update callback
+  UPDATE_FAILED = 0,    // Nothing to update
+  UPDATED_INPLACE = 1,  // Value updated inplace
+  UPDATED = 2,          // No inplace update. Merged value set
 };
 
 enum class PrepopulateBlobCache : uint8_t {
@@ -753,7 +750,7 @@ struct AdvancedColumnFamilyOptions {
   // Related options that were originally here but now moved include:
   //   no_block_cache
   //   block_cache
-  //   block_cache_compressed
+  //   block_cache_compressed (removed)
   //   block_size
   //   block_size_deviation
   //   block_restart_interval
@@ -866,7 +863,9 @@ struct AdvancedColumnFamilyOptions {
   // age is based on the file's last modified time (given by the underlying
   // Env).
   //
-  // Supported in Level and FIFO compaction.
+  // Supported in all compaction styles.
+  // In Universal compaction, rocksdb will try to do a full compaction when
+  // possible, see more in UniversalCompactionBuilder::PickPeriodicCompaction().
   // In FIFO compaction, this option has the same meaning as TTL and whichever
   // stricter will be used.
   // Pre-req: max_open_file == -1.

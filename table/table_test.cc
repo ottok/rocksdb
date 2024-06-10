@@ -186,7 +186,7 @@ class Constructor {
  public:
   explicit Constructor(const Comparator* cmp)
       : data_(stl_wrappers::LessOfComparator(cmp)) {}
-  virtual ~Constructor() { }
+  virtual ~Constructor() {}
 
   void Add(const std::string& key, const Slice& value) {
     data_[key] = value.ToString();
@@ -492,7 +492,7 @@ class TableConstructor : public Constructor {
 };
 uint64_t TableConstructor::cur_file_num_ = 1;
 
-class MemTableConstructor: public Constructor {
+class MemTableConstructor : public Constructor {
  public:
   explicit MemTableConstructor(const Comparator* cmp, WriteBufferManager* wb)
       : Constructor(cmp),
@@ -566,11 +566,10 @@ class InternalIteratorFromIterator : public InternalIterator {
   std::unique_ptr<Iterator> it_;
 };
 
-class DBConstructor: public Constructor {
+class DBConstructor : public Constructor {
  public:
   explicit DBConstructor(const Comparator* cmp)
-      : Constructor(cmp),
-        comparator_(cmp) {
+      : Constructor(cmp), comparator_(cmp) {
     db_ = nullptr;
     NewDB();
   }
@@ -621,11 +620,9 @@ class DBConstructor: public Constructor {
 
 enum TestType {
   BLOCK_BASED_TABLE_TEST,
-#ifndef ROCKSDB_LITE
   PLAIN_TABLE_SEMI_FIXED_PREFIX,
   PLAIN_TABLE_FULL_STR_PREFIX,
   PLAIN_TABLE_TOTAL_ORDER,
-#endif  // !ROCKSDB_LITE
   BLOCK_TEST,
   MEMTABLE_TEST,
   DB_TEST
@@ -654,15 +651,13 @@ std::ostream& operator<<(std::ostream& os, const TestArgs& args) {
 
 static std::vector<TestArgs> GenerateArgList() {
   std::vector<TestArgs> test_args;
-  std::vector<TestType> test_types = {
-      BLOCK_BASED_TABLE_TEST,
-#ifndef ROCKSDB_LITE
-      PLAIN_TABLE_SEMI_FIXED_PREFIX,
-      PLAIN_TABLE_FULL_STR_PREFIX,
-      PLAIN_TABLE_TOTAL_ORDER,
-#endif  // !ROCKSDB_LITE
-      BLOCK_TEST,
-      MEMTABLE_TEST, DB_TEST};
+  std::vector<TestType> test_types = {BLOCK_BASED_TABLE_TEST,
+                                      PLAIN_TABLE_SEMI_FIXED_PREFIX,
+                                      PLAIN_TABLE_FULL_STR_PREFIX,
+                                      PLAIN_TABLE_TOTAL_ORDER,
+                                      BLOCK_TEST,
+                                      MEMTABLE_TEST,
+                                      DB_TEST};
   std::vector<bool> reverse_compare_types = {false, true};
   std::vector<int> restart_intervals = {16, 1, 1024};
   std::vector<uint32_t> compression_parallel_threads = {1, 4};
@@ -698,7 +693,6 @@ static std::vector<TestArgs> GenerateArgList() {
 
   for (auto test_type : test_types) {
     for (auto reverse_compare : reverse_compare_types) {
-#ifndef ROCKSDB_LITE
       if (test_type == PLAIN_TABLE_SEMI_FIXED_PREFIX ||
           test_type == PLAIN_TABLE_FULL_STR_PREFIX ||
           test_type == PLAIN_TABLE_TOTAL_ORDER) {
@@ -716,7 +710,6 @@ static std::vector<TestArgs> GenerateArgList() {
         test_args.push_back(one_arg);
         continue;
       }
-#endif  // !ROCKSDB_LITE
 
       for (auto restart_interval : restart_intervals) {
         for (auto compression_type : compression_types) {
@@ -747,9 +740,8 @@ class FixedOrLessPrefixTransform : public SliceTransform {
   const size_t prefix_len_;
 
  public:
-  explicit FixedOrLessPrefixTransform(size_t prefix_len) :
-      prefix_len_(prefix_len) {
-  }
+  explicit FixedOrLessPrefixTransform(size_t prefix_len)
+      : prefix_len_(prefix_len) {}
 
   const char* Name() const override { return "rocksdb.FixedPrefix"; }
 
@@ -806,8 +798,7 @@ class HarnessTest : public testing::Test {
         internal_comparator_.reset(
             new InternalKeyComparator(options_.comparator));
         break;
-// Plain table is not supported in ROCKSDB_LITE
-#ifndef ROCKSDB_LITE
+
       case PLAIN_TABLE_SEMI_FIXED_PREFIX:
         support_prev_ = false;
         only_support_prefix_seek_ = true;
@@ -847,7 +838,6 @@ class HarnessTest : public testing::Test {
         internal_comparator_.reset(
             new InternalKeyComparator(options_.comparator));
         break;
-#endif  // !ROCKSDB_LITE
       case BLOCK_TEST:
         table_options_.block_size = 256;
         options_.table_factory.reset(
@@ -964,8 +954,8 @@ class HarnessTest : public testing::Test {
         case 2: {
           std::string key = PickRandomKey(rnd, keys);
           model_iter = data.lower_bound(key);
-          if (kVerbose) fprintf(stderr, "Seek '%s'\n",
-                                EscapeString(key).c_str());
+          if (kVerbose)
+            fprintf(stderr, "Seek '%s'\n", EscapeString(key).c_str());
           iter->Seek(Slice(key));
           ASSERT_OK(iter->status());
           ASSERT_EQ(ToString(data, model_iter), ToString(iter));
@@ -978,7 +968,7 @@ class HarnessTest : public testing::Test {
             iter->Prev();
             ASSERT_OK(iter->status());
             if (model_iter == data.begin()) {
-              model_iter = data.end();   // Wrap around to invalid value
+              model_iter = data.end();  // Wrap around to invalid value
             } else {
               --model_iter;
             }
@@ -1047,14 +1037,14 @@ class HarnessTest : public testing::Test {
           break;
         case 1: {
           // Attempt to return something smaller than an existing key
-          if (result.size() > 0 && result[result.size() - 1] > '\0'
-              && (!only_support_prefix_seek_
-                  || options_.prefix_extractor->Transform(result).size()
-                  < result.size())) {
+          if (result.size() > 0 && result[result.size() - 1] > '\0' &&
+              (!only_support_prefix_seek_ ||
+               options_.prefix_extractor->Transform(result).size() <
+                   result.size())) {
             result[result.size() - 1]--;
           }
           break;
-      }
+        }
         case 2: {
           // Return something larger than an existing key
           Increment(options_.comparator, &result);
@@ -1103,8 +1093,7 @@ static bool Between(uint64_t val, uint64_t low, uint64_t high) {
   bool result = (val >= low) && (val <= high);
   if (!result) {
     fprintf(stderr, "Value %llu is not in range [%llu, %llu]\n",
-            (unsigned long long)(val),
-            (unsigned long long)(low),
+            (unsigned long long)(val), (unsigned long long)(low),
             (unsigned long long)(high));
   }
   return result;
@@ -1183,8 +1172,8 @@ class BlockBasedTableTest
 
     {
       std::unique_ptr<TraceReader> trace_reader;
-      Status s =
-          NewFileTraceReader(env_, EnvOptions(), trace_file_path_, &trace_reader);
+      Status s = NewFileTraceReader(env_, EnvOptions(), trace_file_path_,
+                                    &trace_reader);
       EXPECT_OK(s);
       BlockCacheTraceReader reader(std::move(trace_reader));
       BlockCacheTraceHeader header;
@@ -1249,8 +1238,7 @@ class BBTTailPrefetchTest : public TableTest {};
 class FileChecksumTestHelper {
  public:
   FileChecksumTestHelper(bool convert_to_internal_key = false)
-      : convert_to_internal_key_(convert_to_internal_key) {
-  }
+      : convert_to_internal_key_(convert_to_internal_key) {}
   ~FileChecksumTestHelper() {}
 
   void CreateWritableFile() {
@@ -1368,22 +1356,18 @@ INSTANTIATE_TEST_CASE_P(FormatVersions, BlockBasedTableTest,
 // This test serves as the living tutorial for the prefix scan of user collected
 // properties.
 TEST_F(TablePropertyTest, PrefixScanTest) {
-  UserCollectedProperties props{{"num.111.1", "1"},
-                                {"num.111.2", "2"},
-                                {"num.111.3", "3"},
-                                {"num.333.1", "1"},
-                                {"num.333.2", "2"},
-                                {"num.333.3", "3"},
-                                {"num.555.1", "1"},
-                                {"num.555.2", "2"},
-                                {"num.555.3", "3"}, };
+  UserCollectedProperties props{
+      {"num.111.1", "1"}, {"num.111.2", "2"}, {"num.111.3", "3"},
+      {"num.333.1", "1"}, {"num.333.2", "2"}, {"num.333.3", "3"},
+      {"num.555.1", "1"}, {"num.555.2", "2"}, {"num.555.3", "3"},
+  };
 
   // prefixes that exist
   for (const std::string prefix : {"num.111", "num.333", "num.555"}) {
     int num = 0;
     for (auto pos = props.lower_bound(prefix);
          pos != props.end() &&
-             pos->first.compare(0, prefix.size(), prefix) == 0;
+         pos->first.compare(0, prefix.size(), prefix) == 0;
          ++pos) {
       ++num;
       auto key = prefix + "." + std::to_string(num);
@@ -2031,7 +2015,6 @@ TEST_P(BlockBasedTableTest, PrefetchTest) {
   // [ k05         ]    k05
   // [ k06 k07     ]    k07
 
-
   // Simple
   PrefetchRange(&c, &opt, &table_options,
                 /*key_range=*/"k01", "k05",
@@ -2069,35 +2052,35 @@ TEST_P(BlockBasedTableTest, TotalOrderSeekOnHashIndex) {
     // Make each key/value an individual block
     table_options.block_size = 64;
     switch (i) {
-    case 0:
-      // Binary search index
-      table_options.index_type = BlockBasedTableOptions::kBinarySearch;
-      options.table_factory.reset(new BlockBasedTableFactory(table_options));
-      break;
-    case 1:
-      // Hash search index
-      table_options.index_type = BlockBasedTableOptions::kHashSearch;
-      options.table_factory.reset(new BlockBasedTableFactory(table_options));
-      options.prefix_extractor.reset(NewFixedPrefixTransform(4));
-      break;
-    case 2:
-      // Hash search index with filter policy
-      table_options.index_type = BlockBasedTableOptions::kHashSearch;
-      table_options.filter_policy.reset(NewBloomFilterPolicy(10));
-      options.table_factory.reset(new BlockBasedTableFactory(table_options));
-      options.prefix_extractor.reset(NewFixedPrefixTransform(4));
-      break;
-    case 3:
-      // Two-level index
-      table_options.index_type = BlockBasedTableOptions::kTwoLevelIndexSearch;
-      options.table_factory.reset(new BlockBasedTableFactory(table_options));
-      break;
-    case 4:
-      // Binary search with first key
-      table_options.index_type =
-          BlockBasedTableOptions::kBinarySearchWithFirstKey;
-      options.table_factory.reset(new BlockBasedTableFactory(table_options));
-      break;
+      case 0:
+        // Binary search index
+        table_options.index_type = BlockBasedTableOptions::kBinarySearch;
+        options.table_factory.reset(new BlockBasedTableFactory(table_options));
+        break;
+      case 1:
+        // Hash search index
+        table_options.index_type = BlockBasedTableOptions::kHashSearch;
+        options.table_factory.reset(new BlockBasedTableFactory(table_options));
+        options.prefix_extractor.reset(NewFixedPrefixTransform(4));
+        break;
+      case 2:
+        // Hash search index with filter policy
+        table_options.index_type = BlockBasedTableOptions::kHashSearch;
+        table_options.filter_policy.reset(NewBloomFilterPolicy(10));
+        options.table_factory.reset(new BlockBasedTableFactory(table_options));
+        options.prefix_extractor.reset(NewFixedPrefixTransform(4));
+        break;
+      case 3:
+        // Two-level index
+        table_options.index_type = BlockBasedTableOptions::kTwoLevelIndexSearch;
+        options.table_factory.reset(new BlockBasedTableFactory(table_options));
+        break;
+      case 4:
+        // Binary search with first key
+        table_options.index_type =
+            BlockBasedTableOptions::kBinarySearchWithFirstKey;
+        options.table_factory.reset(new BlockBasedTableFactory(table_options));
+        break;
     }
 
     TableConstructor c(BytewiseComparator(),
@@ -2265,9 +2248,16 @@ TEST_P(BlockBasedTableTest, BadChecksumType) {
   const MutableCFOptions new_moptions(options);
   Status s = c.Reopen(new_ioptions, new_moptions);
   ASSERT_NOK(s);
+  // "test" is file name
   ASSERT_EQ(s.ToString(),
-            "Corruption: Corrupt or unsupported checksum type: 123");
+            "Corruption: Corrupt or unsupported checksum type: 123 in test");
 }
+
+class BuiltinChecksumTest : public testing::Test,
+                            public testing::WithParamInterface<ChecksumType> {};
+
+INSTANTIATE_TEST_CASE_P(SupportedChecksums, BuiltinChecksumTest,
+                        testing::ValuesIn(GetSupportedChecksums()));
 
 namespace {
 std::string ChecksumAsString(const std::string& data,
@@ -2294,7 +2284,11 @@ std::string ChecksumAsString(std::string* data, char new_last_byte,
 
 // Make sure that checksum values don't change in later versions, even if
 // consistent within current version.
-TEST_P(BlockBasedTableTest, ChecksumSchemas) {
+TEST_P(BuiltinChecksumTest, ChecksumSchemas) {
+  // Trailing 'x' chars will be replaced by compression type. Specifically,
+  // the first byte of a block trailer is compression type, which is part of
+  // the checksum input. This test does not deal with storing or parsing
+  // checksums from the trailer (next 4 bytes of trailer).
   std::string b0 = "x";
   std::string b1 = "This is a short block!x";
   std::string b2;
@@ -2302,7 +2296,6 @@ TEST_P(BlockBasedTableTest, ChecksumSchemas) {
     b2.append("This is a long block!");
   }
   b2.append("x");
-  // Trailing 'x' will be replaced by compression type
 
   std::string empty;
 
@@ -2310,74 +2303,108 @@ TEST_P(BlockBasedTableTest, ChecksumSchemas) {
   char ct2 = kSnappyCompression;
   char ct3 = kZSTD;
 
-  // Note: first byte of trailer is compression type, last 4 are checksum
+  ChecksumType t = GetParam();
+  switch (t) {
+    case kNoChecksum:
+      EXPECT_EQ(ChecksumAsString(empty, t), "00000000");
+      EXPECT_EQ(ChecksumAsString(&b0, ct1, t), "00000000");
+      EXPECT_EQ(ChecksumAsString(&b0, ct2, t), "00000000");
+      EXPECT_EQ(ChecksumAsString(&b0, ct3, t), "00000000");
+      EXPECT_EQ(ChecksumAsString(&b1, ct1, t), "00000000");
+      EXPECT_EQ(ChecksumAsString(&b1, ct2, t), "00000000");
+      EXPECT_EQ(ChecksumAsString(&b1, ct3, t), "00000000");
+      EXPECT_EQ(ChecksumAsString(&b2, ct1, t), "00000000");
+      EXPECT_EQ(ChecksumAsString(&b2, ct2, t), "00000000");
+      EXPECT_EQ(ChecksumAsString(&b2, ct3, t), "00000000");
+      break;
+    case kCRC32c:
+      EXPECT_EQ(ChecksumAsString(empty, t), "D8EA82A2");
+      EXPECT_EQ(ChecksumAsString(&b0, ct1, t), "D28F2549");
+      EXPECT_EQ(ChecksumAsString(&b0, ct2, t), "052B2843");
+      EXPECT_EQ(ChecksumAsString(&b0, ct3, t), "46F8F711");
+      EXPECT_EQ(ChecksumAsString(&b1, ct1, t), "583F0355");
+      EXPECT_EQ(ChecksumAsString(&b1, ct2, t), "2F9B0A57");
+      EXPECT_EQ(ChecksumAsString(&b1, ct3, t), "ECE7DA1D");
+      EXPECT_EQ(ChecksumAsString(&b2, ct1, t), "943EF0AB");
+      EXPECT_EQ(ChecksumAsString(&b2, ct2, t), "43A2EDB1");
+      EXPECT_EQ(ChecksumAsString(&b2, ct3, t), "00E53D63");
+      break;
+    case kxxHash:
+      EXPECT_EQ(ChecksumAsString(empty, t), "055DCC02");
+      EXPECT_EQ(ChecksumAsString(&b0, ct1, t), "3EB065CF");
+      EXPECT_EQ(ChecksumAsString(&b0, ct2, t), "31F79238");
+      EXPECT_EQ(ChecksumAsString(&b0, ct3, t), "320D2E00");
+      EXPECT_EQ(ChecksumAsString(&b1, ct1, t), "4A2E5FB0");
+      EXPECT_EQ(ChecksumAsString(&b1, ct2, t), "0BD9F652");
+      EXPECT_EQ(ChecksumAsString(&b1, ct3, t), "B4107E50");
+      EXPECT_EQ(ChecksumAsString(&b2, ct1, t), "20F4D4BA");
+      EXPECT_EQ(ChecksumAsString(&b2, ct2, t), "8F1A1F99");
+      EXPECT_EQ(ChecksumAsString(&b2, ct3, t), "A191A338");
+      break;
+    case kxxHash64:
+      EXPECT_EQ(ChecksumAsString(empty, t), "99E9D851");
+      EXPECT_EQ(ChecksumAsString(&b0, ct1, t), "682705DB");
+      EXPECT_EQ(ChecksumAsString(&b0, ct2, t), "30E7211B");
+      EXPECT_EQ(ChecksumAsString(&b0, ct3, t), "B7BB58E8");
+      EXPECT_EQ(ChecksumAsString(&b1, ct1, t), "B74655EF");
+      EXPECT_EQ(ChecksumAsString(&b1, ct2, t), "B6C8BBBE");
+      EXPECT_EQ(ChecksumAsString(&b1, ct3, t), "AED9E3B4");
+      EXPECT_EQ(ChecksumAsString(&b2, ct1, t), "0D4999FE");
+      EXPECT_EQ(ChecksumAsString(&b2, ct2, t), "F5932423");
+      EXPECT_EQ(ChecksumAsString(&b2, ct3, t), "6B31BAB1");
+      break;
+    case kXXH3:
+      EXPECT_EQ(ChecksumAsString(empty, t), "00000000");
+      EXPECT_EQ(ChecksumAsString(&b0, ct1, t), "C294D338");
+      EXPECT_EQ(ChecksumAsString(&b0, ct2, t), "1B174353");
+      EXPECT_EQ(ChecksumAsString(&b0, ct3, t), "2D0E20C8");
+      EXPECT_EQ(ChecksumAsString(&b1, ct1, t), "B37FB5E6");
+      EXPECT_EQ(ChecksumAsString(&b1, ct2, t), "6AFC258D");
+      EXPECT_EQ(ChecksumAsString(&b1, ct3, t), "5CE54616");
+      EXPECT_EQ(ChecksumAsString(&b2, ct1, t), "FA2D482E");
+      EXPECT_EQ(ChecksumAsString(&b2, ct2, t), "23AED845");
+      EXPECT_EQ(ChecksumAsString(&b2, ct3, t), "15B7BBDE");
+      break;
+    default:
+      // Force this test to be updated on new ChecksumTypes
+      assert(false);
+      break;
+  }
+}
 
-  for (ChecksumType t : GetSupportedChecksums()) {
-    switch (t) {
-      case kNoChecksum:
-        EXPECT_EQ(ChecksumAsString(empty, t), "00000000");
-        EXPECT_EQ(ChecksumAsString(&b0, ct1, t), "00000000");
-        EXPECT_EQ(ChecksumAsString(&b0, ct2, t), "00000000");
-        EXPECT_EQ(ChecksumAsString(&b0, ct3, t), "00000000");
-        EXPECT_EQ(ChecksumAsString(&b1, ct1, t), "00000000");
-        EXPECT_EQ(ChecksumAsString(&b1, ct2, t), "00000000");
-        EXPECT_EQ(ChecksumAsString(&b1, ct3, t), "00000000");
-        EXPECT_EQ(ChecksumAsString(&b2, ct1, t), "00000000");
-        EXPECT_EQ(ChecksumAsString(&b2, ct2, t), "00000000");
-        EXPECT_EQ(ChecksumAsString(&b2, ct3, t), "00000000");
-        break;
-      case kCRC32c:
-        EXPECT_EQ(ChecksumAsString(empty, t), "D8EA82A2");
-        EXPECT_EQ(ChecksumAsString(&b0, ct1, t), "D28F2549");
-        EXPECT_EQ(ChecksumAsString(&b0, ct2, t), "052B2843");
-        EXPECT_EQ(ChecksumAsString(&b0, ct3, t), "46F8F711");
-        EXPECT_EQ(ChecksumAsString(&b1, ct1, t), "583F0355");
-        EXPECT_EQ(ChecksumAsString(&b1, ct2, t), "2F9B0A57");
-        EXPECT_EQ(ChecksumAsString(&b1, ct3, t), "ECE7DA1D");
-        EXPECT_EQ(ChecksumAsString(&b2, ct1, t), "943EF0AB");
-        EXPECT_EQ(ChecksumAsString(&b2, ct2, t), "43A2EDB1");
-        EXPECT_EQ(ChecksumAsString(&b2, ct3, t), "00E53D63");
-        break;
-      case kxxHash:
-        EXPECT_EQ(ChecksumAsString(empty, t), "055DCC02");
-        EXPECT_EQ(ChecksumAsString(&b0, ct1, t), "3EB065CF");
-        EXPECT_EQ(ChecksumAsString(&b0, ct2, t), "31F79238");
-        EXPECT_EQ(ChecksumAsString(&b0, ct3, t), "320D2E00");
-        EXPECT_EQ(ChecksumAsString(&b1, ct1, t), "4A2E5FB0");
-        EXPECT_EQ(ChecksumAsString(&b1, ct2, t), "0BD9F652");
-        EXPECT_EQ(ChecksumAsString(&b1, ct3, t), "B4107E50");
-        EXPECT_EQ(ChecksumAsString(&b2, ct1, t), "20F4D4BA");
-        EXPECT_EQ(ChecksumAsString(&b2, ct2, t), "8F1A1F99");
-        EXPECT_EQ(ChecksumAsString(&b2, ct3, t), "A191A338");
-        break;
-      case kxxHash64:
-        EXPECT_EQ(ChecksumAsString(empty, t), "99E9D851");
-        EXPECT_EQ(ChecksumAsString(&b0, ct1, t), "682705DB");
-        EXPECT_EQ(ChecksumAsString(&b0, ct2, t), "30E7211B");
-        EXPECT_EQ(ChecksumAsString(&b0, ct3, t), "B7BB58E8");
-        EXPECT_EQ(ChecksumAsString(&b1, ct1, t), "B74655EF");
-        EXPECT_EQ(ChecksumAsString(&b1, ct2, t), "B6C8BBBE");
-        EXPECT_EQ(ChecksumAsString(&b1, ct3, t), "AED9E3B4");
-        EXPECT_EQ(ChecksumAsString(&b2, ct1, t), "0D4999FE");
-        EXPECT_EQ(ChecksumAsString(&b2, ct2, t), "F5932423");
-        EXPECT_EQ(ChecksumAsString(&b2, ct3, t), "6B31BAB1");
-        break;
-      case kXXH3:
-        EXPECT_EQ(ChecksumAsString(empty, t), "00000000");
-        EXPECT_EQ(ChecksumAsString(&b0, ct1, t), "C294D338");
-        EXPECT_EQ(ChecksumAsString(&b0, ct2, t), "1B174353");
-        EXPECT_EQ(ChecksumAsString(&b0, ct3, t), "2D0E20C8");
-        EXPECT_EQ(ChecksumAsString(&b1, ct1, t), "B37FB5E6");
-        EXPECT_EQ(ChecksumAsString(&b1, ct2, t), "6AFC258D");
-        EXPECT_EQ(ChecksumAsString(&b1, ct3, t), "5CE54616");
-        EXPECT_EQ(ChecksumAsString(&b2, ct1, t), "FA2D482E");
-        EXPECT_EQ(ChecksumAsString(&b2, ct2, t), "23AED845");
-        EXPECT_EQ(ChecksumAsString(&b2, ct3, t), "15B7BBDE");
-        break;
-      default:
-        // Force this test to be updated on new ChecksumTypes
-        assert(false);
-        break;
+TEST_P(BuiltinChecksumTest, ChecksumZeroInputs) {
+  // Verify that no reasonably sized "all zeros" inputs produce "all zeros"
+  // output. Otherwise, "wiped" data could appear to be well-formed.
+  // Assuming essentially random assignment of output values, the likelihood
+  // of encountering checksum == 0 for an input not specifically crafted is
+  // 1 in 4 billion.
+  if (GetParam() == kNoChecksum) {
+    return;
+  }
+  // "Thorough" case is too slow for continouous testing
+  bool thorough = getenv("ROCKSDB_THOROUGH_CHECKSUM_TEST") != nullptr;
+  // Verified through 10M
+  size_t kMaxZerosLen = thorough ? 10000000 : 20000;
+  std::string zeros(kMaxZerosLen, '\0');
+
+  for (size_t len = 0; len < kMaxZerosLen; ++len) {
+    if (thorough && (len & 0xffffU) == 0) {
+      fprintf(stderr, "t=%u len=%u\n", (unsigned)GetParam(), (unsigned)len);
+    }
+    uint32_t v = ComputeBuiltinChecksum(GetParam(), zeros.data(), len);
+    if (v == 0U) {
+      // One exception case:
+      if (GetParam() == kXXH3 && len == 0) {
+        // This is not a big deal because assuming the block length is known
+        // from the block handle, which comes from a checksum-verified block,
+        // there is nothing to corrupt in a zero-length block. And when there
+        // is a block trailer with compression byte (as in block-based table),
+        // zero length checksummed data never arises.
+        continue;
+      }
+      // Only compute this on failure
+      SCOPED_TRACE("len=" + std::to_string(len));
+      ASSERT_NE(v, 0U);
     }
   }
 }
@@ -2452,7 +2479,12 @@ void TableTest::IndexTest(BlockBasedTableOptions table_options) {
   }
 
   // find the upper bound of prefixes
-  std::vector<std::string> upper_bound = {keys[1], keys[2], keys[7], keys[9], };
+  std::vector<std::string> upper_bound = {
+      keys[1],
+      keys[2],
+      keys[7],
+      keys[9],
+  };
 
   // find existing keys
   for (const auto& item : kvmap) {
@@ -3814,8 +3846,6 @@ TEST_P(BlockBasedTableTest, Crc32cFileChecksum) {
   ASSERT_STREQ(checksum.c_str(), "\345\245\277\110");
 }
 
-// Plain table is not supported in ROCKSDB_LITE
-#ifndef ROCKSDB_LITE
 TEST_F(PlainTableTest, BasicPlainTableProperties) {
   PlainTableOptions plain_table_options;
   plain_table_options.user_key_len = 8;
@@ -3945,7 +3975,6 @@ TEST_F(PlainTableTest, Crc32cFileChecksum) {
   EXPECT_STREQ(f.GetFileChecksum().c_str(), checksum.c_str());
 }
 
-#endif  // !ROCKSDB_LITE
 
 TEST_F(GeneralTableTest, ApproximateOffsetOfPlain) {
   TableConstructor c(BytewiseComparator(), true /* convert_to_internal_key_ */);
@@ -3969,19 +3998,19 @@ TEST_F(GeneralTableTest, ApproximateOffsetOfPlain) {
   c.Finish(options, ioptions, moptions, table_options, internal_comparator,
            &keys, &kvmap);
 
-  ASSERT_TRUE(Between(c.ApproximateOffsetOf("abc"),       0,      0));
-  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k01"),       0,      0));
-  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k01a"),      0,      0));
-  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k02"),       0,      0));
-  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k03"),       0,      0));
-  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k04"),   10000,  11000));
+  ASSERT_TRUE(Between(c.ApproximateOffsetOf("abc"), 0, 0));
+  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k01"), 0, 0));
+  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k01a"), 0, 0));
+  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k02"), 0, 0));
+  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k03"), 0, 0));
+  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k04"), 10000, 11000));
   // k04 and k05 will be in two consecutive blocks, the index is
   // an arbitrary slice between k04 and k05, either before or after k04a
   ASSERT_TRUE(Between(c.ApproximateOffsetOf("k04a"), 10000, 211000));
-  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k05"),  210000, 211000));
-  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k06"),  510000, 511000));
-  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k07"),  510000, 511000));
-  ASSERT_TRUE(Between(c.ApproximateOffsetOf("xyz"),  610000, 612000));
+  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k05"), 210000, 211000));
+  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k06"), 510000, 511000));
+  ASSERT_TRUE(Between(c.ApproximateOffsetOf("k07"), 510000, 511000));
+  ASSERT_TRUE(Between(c.ApproximateOffsetOf("xyz"), 610000, 612000));
   c.ResetTableReader();
 }
 
@@ -4045,8 +4074,7 @@ TEST_F(GeneralTableTest, ApproximateOffsetOfCompressed) {
 
   if (!XPRESS_Supported()) {
     fprintf(stderr, "skipping xpress and xpress compression tests\n");
-  }
-  else {
+  } else {
     compression_state.push_back(kXpressCompression);
   }
 
@@ -4119,7 +4147,6 @@ TEST_P(ParameterizedHarnessTest, RandomizedHarnessTest) {
   }
 }
 
-#ifndef ROCKSDB_LITE
 TEST_F(DBHarnessTest, RandomizedLongDB) {
   Random rnd(test::RandomSeed());
   int num_entries = 100000;
@@ -4140,7 +4167,6 @@ TEST_F(DBHarnessTest, RandomizedLongDB) {
   }
   ASSERT_GT(files, 0);
 }
-#endif  // ROCKSDB_LITE
 #endif  // !defined(ROCKSDB_VALGRIND_RUN) || defined(ROCKSDB_FULL_VALGRIND_RUN)
 
 class MemTableTest : public testing::Test {
@@ -4285,8 +4311,7 @@ TEST(TableTest, FooterTests) {
       ASSERT_EQ(decoded_footer.GetBlockTrailerSize(), 5U);
     }
   }
-// Plain table is not supported in ROCKSDB_LITE
-#ifndef ROCKSDB_LITE
+
   {
     // legacy plain table
     FooterBuilder footer;
@@ -4323,7 +4348,6 @@ TEST(TableTest, FooterTests) {
     ASSERT_EQ(decoded_footer.format_version(), 1U);
     ASSERT_EQ(decoded_footer.GetBlockTrailerSize(), 0U);
   }
-#endif  // !ROCKSDB_LITE
 }
 
 class IndexBlockRestartIntervalTest
@@ -4811,9 +4835,9 @@ TEST_P(BlockBasedTableTest, PropertiesBlockRestartPointTest) {
 
     Footer footer;
     IOOptions opts;
-    ASSERT_OK(ReadFooterFromFile(opts, file, nullptr /* prefetch_buffer */,
-                                 file_size, &footer,
-                                 kBlockBasedTableMagicNumber));
+    ASSERT_OK(ReadFooterFromFile(opts, file, *FileSystem::Default(),
+                                 nullptr /* prefetch_buffer */, file_size,
+                                 &footer, kBlockBasedTableMagicNumber));
 
     auto BlockFetchHelper = [&](const BlockHandle& handle, BlockType block_type,
                                 BlockContents* contents) {
@@ -4897,7 +4921,7 @@ TEST_P(BlockBasedTableTest, PropertiesMetaBlockLast) {
   // read footer
   Footer footer;
   IOOptions opts;
-  ASSERT_OK(ReadFooterFromFile(opts, table_reader.get(),
+  ASSERT_OK(ReadFooterFromFile(opts, table_reader.get(), *FileSystem::Default(),
                                nullptr /* prefetch_buffer */, table_size,
                                &footer, kBlockBasedTableMagicNumber));
 
@@ -4975,7 +4999,7 @@ TEST_P(BlockBasedTableTest, SeekMetaBlocks) {
   // read footer
   Footer footer;
   IOOptions opts;
-  ASSERT_OK(ReadFooterFromFile(opts, table_reader.get(),
+  ASSERT_OK(ReadFooterFromFile(opts, table_reader.get(), *FileSystem::Default(),
                                nullptr /* prefetch_buffer */, table_size,
                                &footer, kBlockBasedTableMagicNumber));
 
