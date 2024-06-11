@@ -580,13 +580,8 @@ class NonBatchedOpsStressTest : public StressTest {
     int column_family = rand_column_families[0];
     ColumnFamilyHandle* cfh = column_families_[column_family];
     int error_count = 0;
-    // Do a consistency check between Get and MultiGet. Don't do it too
-    // often as it will slow db_stress down
-    //
-    // CompactionFilter can make snapshot non-repeatable by removing keys
-    // protected by snapshot
-    bool do_consistency_check =
-        !FLAGS_enable_compaction_filter && thread->rand.OneIn(4);
+
+    bool do_consistency_check = FLAGS_check_multiget_consistency;
 
     ReadOptions readoptionscopy = read_opts;
 
@@ -1075,10 +1070,8 @@ class NonBatchedOpsStressTest : public StressTest {
       fault_fs_guard->DisableErrorInjection();
     }
 
-    // CompactionFilter can make snapshot non-repeatable by removing keys
-    // protected by snapshot
-    const bool check_get_entity = !FLAGS_enable_compaction_filter &&
-                                  !error_count && thread->rand.OneIn(4);
+    const bool check_get_entity =
+        !error_count && FLAGS_check_multiget_entity_consistency;
 
     for (size_t i = 0; i < num_keys; ++i) {
       const Status& s = statuses[i];
@@ -1311,6 +1304,15 @@ class NonBatchedOpsStressTest : public StressTest {
         (value_base % FLAGS_use_put_entity_one_in) == 0) {
       s = db_->PutEntity(write_opts, cfh, k,
                          GenerateWideColumns(value_base, v));
+    } else if (FLAGS_use_timed_put_one_in > 0 &&
+               ((value_base + kLargePrimeForCommonFactorSkew) %
+                FLAGS_use_timed_put_one_in) == 0) {
+      WriteBatch wb;
+      uint64_t write_unix_time = GetWriteUnixTime(thread);
+      s = wb.TimedPut(cfh, k, v, write_unix_time);
+      if (s.ok()) {
+        s = db_->Write(write_opts, &wb);
+      }
     } else if (FLAGS_use_merge) {
       if (!FLAGS_use_txn) {
         if (FLAGS_user_timestamp_size == 0) {

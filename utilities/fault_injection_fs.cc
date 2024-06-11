@@ -255,15 +255,10 @@ IOStatus TestFSWritableFile::Close(const IOOptions& options,
   }
   writable_file_opened_ = false;
   IOStatus io_s;
-  if (!target_->use_direct_io()) {
-    io_s = target_->Append(state_.buffer_, options, dbg);
-  }
-  if (io_s.ok()) {
-    state_.buffer_.resize(0);
-    // Ignore sync errors
-    target_->Sync(options, dbg).PermitUncheckedError();
-    io_s = target_->Close(options, dbg);
-  }
+  // Drop buffered data that was never synced because close is not a syncing
+  // mechanism in POSIX file semantics.
+  state_.buffer_.resize(0);
+  io_s = target_->Close(options, dbg);
   if (io_s.ok()) {
     IOStatus in_s = fs_->InjectMetadataWriteError();
     if (!in_s.ok()) {
@@ -631,6 +626,17 @@ IOStatus FaultInjectionTestFS::ReopenWritableFile(
     }
   }
   return io_s;
+}
+
+IOStatus FaultInjectionTestFS::ReuseWritableFile(
+    const std::string& fname, const std::string& old_fname,
+    const FileOptions& file_opts, std::unique_ptr<FSWritableFile>* result,
+    IODebugContext* dbg) {
+  IOStatus s = RenameFile(old_fname, fname, file_opts.io_options, dbg);
+  if (!s.ok()) {
+    return s;
+  }
+  return NewWritableFile(fname, file_opts, result, dbg);
 }
 
 IOStatus FaultInjectionTestFS::NewRandomRWFile(
