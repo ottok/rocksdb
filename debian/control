@@ -7,6 +7,8 @@ Build-Depends: debhelper-compat (= 13), cmake, libgflags-dev, libsnappy-dev,
 Standards-Version: 4.7.0
 Rules-Requires-Root: no
 Homepage: https://rocksdb.org/
+Vcs-Browser: https://salsa.debian.org/debian/rocksdb
+Vcs-Git: https://salsa.debian.org/debian/rocksdb.git
 
 Package: librocksdb-dev
 Section: libdevel
