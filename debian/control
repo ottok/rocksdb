@@ -13,7 +13,7 @@ Vcs-Git: https://salsa.debian.org/debian/rocksdb.git
 Package: librocksdb-dev
 Section: libdevel
 Architecture: amd64 arm64 armel armhf loong64 ppc64el mips mipsel mips64el s390x i386 riscv64
-Depends: ${misc:Depends}, librocksdb9.2 (= ${binary:Version}), libgflags-dev,
+Depends: ${misc:Depends}, librocksdb9.3 (= ${binary:Version}), libgflags-dev,
  libsnappy-dev, libbz2-dev, zlib1g-dev, liblz4-dev, libzstd-dev
 Description: persistent Key-Value Store for Flash and RAM Storage (development)
  C++ library providing an embedded key-value store, where keys and values are
@@ -39,7 +39,7 @@ Description: persistent Key-Value Store for Flash and RAM Storage (development)
  This package contains libraries and header files for developing
  applications that use librocksdb .
 
-Package: librocksdb9.2
+Package: librocksdb9.3
 Section: libs
 Architecture: amd64 arm64 armel armhf loong64 ppc64el mips mipsel mips64el s390x i386 riscv64
 Depends: ${misc:Depends}, ${shlibs:Depends}
