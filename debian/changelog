@@ -1,3 +1,10 @@
+rocksdb (9.3.1-1) unstable; urgency=medium
+
+  * New major upstream release.
+  * Library transition from librocksdb9.2 to librocksdb9.3.
+
+ -- Otto Kekäläinen <otto@debian.org>  Mon, 01 Jul 2024 16:27:03 -0700
+
 rocksdb (9.2.1-3) unstable; urgency=medium
 
   [ wuruilong <wuruilong@loongson.cn> ]
