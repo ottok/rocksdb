@@ -2,8 +2,15 @@ Source: rocksdb
 Section: database
 Priority: optional
 Maintainer: Laszlo Boszormenyi (GCS) <gcs@debian.org>
-Build-Depends: debhelper-compat (= 13), cmake, libgflags-dev, libsnappy-dev,
- libbz2-dev, zlib1g-dev, liblz4-dev, libzstd-dev
+Build-Depends:
+ cmake,
+ debhelper-compat (= 13),
+ libbz2-dev,
+ libgflags-dev,
+ liblz4-dev,
+ libsnappy-dev,
+ libzstd-dev,
+ zlib1g-dev,
 Standards-Version: 4.7.0
 Rules-Requires-Root: no
 Homepage: https://rocksdb.org/
@@ -12,9 +19,16 @@ Vcs-Git: https://salsa.debian.org/debian/rocksdb.git
 
 Package: librocksdb-dev
 Section: libdevel
-Architecture: amd64 arm64 armel armhf loong64 ppc64el mips mipsel mips64el s390x i386 riscv64
-Depends: ${misc:Depends}, librocksdb9.3 (= ${binary:Version}), libgflags-dev,
- libsnappy-dev, libbz2-dev, zlib1g-dev, liblz4-dev, libzstd-dev
+Architecture: amd64 arm64 armel armhf i386 loong64 mips mips64el mipsel ppc64el riscv64 s390x
+Depends:
+ libbz2-dev,
+ libgflags-dev,
+ liblz4-dev,
+ librocksdb9.3 (= ${binary:Version}),
+ libsnappy-dev,
+ libzstd-dev,
+ zlib1g-dev,
+ ${misc:Depends},
 Description: persistent Key-Value Store for Flash and RAM Storage (development)
  C++ library providing an embedded key-value store, where keys and values are
  arbitrary byte streams. It was developed at Facebook based on LevelDB and
@@ -41,8 +55,10 @@ Description: persistent Key-Value Store for Flash and RAM Storage (development)
 
 Package: librocksdb9.3
 Section: libs
-Architecture: amd64 arm64 armel armhf loong64 ppc64el mips mipsel mips64el s390x i386 riscv64
-Depends: ${misc:Depends}, ${shlibs:Depends}
+Architecture: amd64 arm64 armel armhf i386 loong64 mips mips64el mipsel ppc64el riscv64 s390x
+Depends:
+ ${misc:Depends},
+ ${shlibs:Depends},
 Description: persistent Key-Value Store for Flash and RAM Storage
  C++ library providing an embedded key-value store, where keys and values are
  arbitrary byte streams. It was developed at Facebook based on LevelDB and
@@ -65,8 +81,10 @@ Description: persistent Key-Value Store for Flash and RAM Storage
      processors
 
 Package: rocksdb-tools
-Architecture: amd64 arm64 armel armhf loong64 ppc64el mips mipsel mips64el s390x i386 riscv64
-Depends: ${misc:Depends}, ${shlibs:Depends}
+Architecture: amd64 arm64 armel armhf i386 loong64 mips mips64el mipsel ppc64el riscv64 s390x
+Depends:
+ ${misc:Depends},
+ ${shlibs:Depends},
 Description: persistent Key-Value Store for Flash and RAM Storage (tools)
  C++ library providing an embedded key-value store, where keys and values are
  arbitrary byte streams. It was developed at Facebook based on LevelDB and
