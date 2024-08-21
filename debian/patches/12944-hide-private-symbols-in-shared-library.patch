@@ -1,0 +1,550 @@
+From: Radek Hubner <rhubner@users.noreply.github.com>
+Date: Mon, 19 Aug 2024 20:33:14 +0400
+Subject: [PATCH 1/2] Hide private symbols in shared library
+
+Add new build flag HIDE_PRIVATE_SYMBOLS to allow compile
+shared library without exported private symbols.
+
+Work only in Release mode.
+
+Forwarded: https://github.com/facebook/rocksdb/pull/12944
+Origin: https://patch-diff.githubusercontent.com/raw/facebook/rocksdb/pull/12944.patch
+---
+ CMakeLists.txt                                           | 10 ++++++++++
+ Makefile                                                 |  5 +++++
+ db/db_impl/db_impl.cc                                    |  2 +-
+ db/dbformat.h                                            |  3 ++-
+ include/rocksdb/c.h                                      |  5 +++++
+ include/rocksdb/cleanable.h                              |  5 +++--
+ include/rocksdb/comparator.h                             |  5 +++--
+ include/rocksdb/configurable.h                           |  7 ++++---
+ include/rocksdb/customizable.h                           |  8 ++++----
+ include/rocksdb/db.h                                     |  4 ++--
+ include/rocksdb/env.h                                    |  2 +-
+ include/rocksdb/ldb_tool.h                               |  4 ++--
+ include/rocksdb/options.h                                |  5 +++--
+ include/rocksdb/slice_transform.h                        |  2 +-
+ include/rocksdb/sst_dump_tool.h                          |  2 +-
+ include/rocksdb/status.h                                 |  6 +++---
+ include/rocksdb/table.h                                  |  2 +-
+ monitoring/perf_context.cc                               |  4 +++-
+ monitoring/perf_level.cc                                 |  4 +++-
+ options/options.cc                                       |  2 ++
+ table/block_based/block_based_table_factory.cc           |  2 +-
+ table/block_based/filter_policy.cc                       |  2 +-
+ tools/block_cache_analyzer/block_cache_trace_analyzer.cc |  2 +-
+ tools/db_sanity_test.cc                                  |  9 ++++++---
+ tools/trace_analyzer_tool.cc                             |  2 +-
+ 25 files changed, 69 insertions(+), 35 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 2c59d65..0905900 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1158,6 +1158,16 @@ if(ROCKSDB_BUILD_SHARED)
+                           VERSION ${rocksdb_VERSION}
+                           SOVERSION ${rocksdb_VERSION_LIB}
+                           OUTPUT_NAME "rocksdb${ARTIFACT_SUFFIX}")
++    
++    if(HIDE_PRIVATE_SYMBOLS AND CMAKE_BUILD_TYPE STREQUAL "Release")  # Do not export private symbols in output shared library
++      message("HIDING symbols")
++      set_target_properties(${ROCKSDB_SHARED_LIB} PROPERTIES                           
++                          CXX_VISIBILITY_PRESET hidden
++                          VISIBILITY_INLINES_HIDDEN ON
++      )
++      target_compile_definitions(${ROCKSDB_SHARED_LIB} PUBLIC HIDE_PRIVATE_SYMBOLS)    
++    endif()
++
+   endif()
+ endif()
+ 
+diff --git a/Makefile b/Makefile
+index c850681..84a2632 100644
+--- a/Makefile
++++ b/Makefile
+@@ -160,6 +160,11 @@ endif
+ ifeq ($(DEBUG_LEVEL),0)
+ OPT += -DNDEBUG
+ 
++#Only in non debug mode
++ifeq ($(HIDE_PRIVATE_SYMBOLS), 1)
++	CXXFLAGS += -fvisibility=hidden -fvisibility-inlines-hidden -DHIDE_PRIVATE_SYMBOLS
++endif
++
+ ifneq ($(USE_RTTI), 1)
+ 	CXXFLAGS += -fno-rtti
+ else
+diff --git a/db/db_impl/db_impl.cc b/db/db_impl/db_impl.cc
+index 3bc2be1..7eb5f57 100644
+--- a/db/db_impl/db_impl.cc
++++ b/db/db_impl/db_impl.cc
+@@ -5345,7 +5345,7 @@ Status DB::ListColumnFamilies(const DBOptions& db_options,
+ 
+ Snapshot::~Snapshot() = default;
+ 
+-Status DestroyDB(const std::string& dbname, const Options& options,
++ROCKSDB_LIBRARY_API Status DestroyDB(const std::string& dbname, const Options& options,
+                  const std::vector<ColumnFamilyDescriptor>& column_families) {
+   ImmutableDBOptions soptions(SanitizeOptions(dbname, options));
+   Env* env = soptions.env;
+diff --git a/db/dbformat.h b/db/dbformat.h
+index f3a9b9a..606d3cd 100644
+--- a/db/dbformat.h
++++ b/db/dbformat.h
+@@ -8,6 +8,7 @@
+ // found in the LICENSE file. See the AUTHORS file for names of contributors.
+ 
+ #pragma once
++#include <rocksdb/c.h>
+ #include <stdio.h>
+ 
+ #include <array>
+@@ -398,7 +399,7 @@ class InternalKeyComparator
+   explicit InternalKeyComparator(const Comparator* c) : user_comparator_(c) {}
+   virtual ~InternalKeyComparator() {}
+ 
+-  int Compare(const Slice& a, const Slice& b) const override;
++  ROCKSDB_LIBRARY_API int Compare(const Slice& a, const Slice& b) const override;
+ 
+   bool Equal(const Slice& a, const Slice& b) const {
+     // TODO Use user_comparator_.Equal(). Perhaps compare seqno before
+diff --git a/include/rocksdb/c.h b/include/rocksdb/c.h
+index ed403a6..89a4ad9 100644
+--- a/include/rocksdb/c.h
++++ b/include/rocksdb/c.h
+@@ -55,9 +55,14 @@
+ #define ROCKSDB_LIBRARY_API
+ #endif
+ #else
++
++#ifdef HIDE_PRIVATE_SYMBOLS
++#define ROCKSDB_LIBRARY_API __attribute__((visibility("default")))
++#else
+ #define ROCKSDB_LIBRARY_API
+ #endif
+ 
++#endif
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+diff --git a/include/rocksdb/cleanable.h b/include/rocksdb/cleanable.h
+index afc7366..5766ec4 100644
+--- a/include/rocksdb/cleanable.h
++++ b/include/rocksdb/cleanable.h
+@@ -8,19 +8,20 @@
+ 
+ #pragma once
+ 
++#include "c.h"
+ #include "rocksdb/rocksdb_namespace.h"
+ 
+ namespace ROCKSDB_NAMESPACE {
+ 
+ class Cleanable {
+  public:
+-  Cleanable();
++  ROCKSDB_LIBRARY_API Cleanable();
+   // No copy constructor and copy assignment allowed.
+   Cleanable(Cleanable&) = delete;
+   Cleanable& operator=(Cleanable&) = delete;
+ 
+   // Executes all the registered cleanups
+-  ~Cleanable();
++  ROCKSDB_LIBRARY_API ~Cleanable();
+ 
+   // Move constructor and move assignment is allowed.
+   Cleanable(Cleanable&&) noexcept;
+diff --git a/include/rocksdb/comparator.h b/include/rocksdb/comparator.h
+index d727d38..2fae760 100644
+--- a/include/rocksdb/comparator.h
++++ b/include/rocksdb/comparator.h
+@@ -10,6 +10,7 @@
+ 
+ #include <string>
+ 
++#include "c.h"
+ #include "rocksdb/customizable.h"
+ #include "rocksdb/rocksdb_namespace.h"
+ 
+@@ -41,7 +42,7 @@ class CompareInterface {
+ // Exceptions MUST NOT propagate out of overridden functions into RocksDB,
+ // because RocksDB is not exception-safe. This could cause undefined behavior
+ // including data loss, unreported corruption, deadlocks, and more.
+-class Comparator : public Customizable, public CompareInterface {
++class ROCKSDB_LIBRARY_API Comparator : public Customizable, public CompareInterface {
+  public:
+   Comparator() : timestamp_size_(0) {}
+ 
+@@ -184,7 +185,7 @@ class Comparator : public Customizable, public CompareInterface {
+ // else and a sufficiently long string of \xFF orders after anything.
+ // CanKeysWithDifferentByteContentsBeEqual() == false
+ // Returns an immortal pointer that must not be deleted by the caller.
+-const Comparator* BytewiseComparator();
++ROCKSDB_LIBRARY_API const Comparator* BytewiseComparator();
+ 
+ // Return a builtin comparator that is the reverse ordering of
+ // BytewiseComparator(), so the empty string is ordered after everything
+diff --git a/include/rocksdb/configurable.h b/include/rocksdb/configurable.h
+index 9dab340..755082c 100644
+--- a/include/rocksdb/configurable.h
++++ b/include/rocksdb/configurable.h
+@@ -14,6 +14,7 @@
+ #include <unordered_set>
+ #include <vector>
+ 
++#include "c.h"
+ #include "rocksdb/rocksdb_namespace.h"
+ #include "rocksdb/status.h"
+ 
+@@ -41,7 +42,7 @@ struct DBOptions;
+ // handled by this class without additional overrides. Otherwise, the derived
+ // class will need to implement the methods for handling the corresponding
+ // functionality.
+-class Configurable {
++class ROCKSDB_LIBRARY_API Configurable {
+  protected:
+   friend class ConfigurableHelper;
+   struct RegisteredOptions {
+@@ -56,7 +57,7 @@ class Configurable {
+   };
+ 
+  public:
+-  virtual ~Configurable() {}
++  ROCKSDB_LIBRARY_API virtual ~Configurable() {}
+ 
+   // Returns the raw pointer of the named options that is used by this
+   // object, or nullptr if this function is not supported.
+@@ -288,7 +289,7 @@ class Configurable {
+   // with that name is returned.
+   // e.g,, RegisterOptions("X", &my_ptr, ...); GetOptionsPtr("X") returns
+   // "my_ptr"
+-  virtual const void* GetOptionsPtr(const std::string& name) const;
++  ROCKSDB_LIBRARY_API virtual const void* GetOptionsPtr(const std::string& name) const;
+ 
+   // Method for allowing options to be configured outside of the normal
+   // registered options framework.  Classes may override this method if they
+diff --git a/include/rocksdb/customizable.h b/include/rocksdb/customizable.h
+index 076aca6..13ac21e 100644
+--- a/include/rocksdb/customizable.h
++++ b/include/rocksdb/customizable.h
+@@ -154,12 +154,12 @@ class Customizable : public Configurable {
+   //      the name of the option that triggered the match failure.
+   // @param True if the objects match, false otherwise.
+   // @see Configurable::AreEquivalent for more details
+-  bool AreEquivalent(const ConfigOptions& config_options,
++  ROCKSDB_LIBRARY_API bool AreEquivalent(const ConfigOptions& config_options,
+                      const Configurable* other,
+                      std::string* mismatch) const override;
+   // Gets the value of the option associated with the input name
+   // @see Configurable::GetOption for more details
+-  Status GetOption(const ConfigOptions& config_options, const std::string& name,
++  ROCKSDB_LIBRARY_API Status GetOption(const ConfigOptions& config_options, const std::string& name,
+                    std::string* value) const override;
+   // Helper method for getting for parsing the opt_value into the corresponding
+   // options for use in potentially creating a new Customizable object (this
+@@ -221,8 +221,8 @@ class Customizable : public Configurable {
+   // nickname.  Nicknames can be used by InstanceOf and object creation.
+   virtual const char* NickName() const { return ""; }
+   //  Given a name (e.g. rocksdb.my.type.opt), returns the short name (opt)
+-  std::string GetOptionName(const std::string& long_name) const override;
+-  std::string SerializeOptions(const ConfigOptions& options,
++  ROCKSDB_LIBRARY_API std::string GetOptionName(const std::string& long_name) const override;
++  ROCKSDB_LIBRARY_API std::string SerializeOptions(const ConfigOptions& options,
+                                const std::string& prefix) const override;
+ };
+ 
+diff --git a/include/rocksdb/db.h b/include/rocksdb/db.h
+index 9beb4e7..e684030 100644
+--- a/include/rocksdb/db.h
++++ b/include/rocksdb/db.h
+@@ -172,7 +172,7 @@ using TablePropertiesCollection =
+ // any external synchronization.
+ // DB is an abstract base class with one primary implementation (DBImpl)
+ // and a number of wrapper implementations.
+-class DB {
++class ROCKSDB_LIBRARY_API DB {
+  public:
+   // Open the database with the specified "name" for reads and writes.
+   // Stores a pointer to a heap-allocated database in *dbptr and returns
+@@ -200,7 +200,7 @@ class DB {
+   // will use to operate on column family column_family[i].
+   // Before delete DB, you have to close All column families by calling
+   // DestroyColumnFamilyHandle() with all the handles.
+-  static Status Open(const DBOptions& db_options, const std::string& name,
++  ROCKSDB_LIBRARY_API static Status Open(const DBOptions& db_options, const std::string& name,
+                      const std::vector<ColumnFamilyDescriptor>& column_families,
+                      std::vector<ColumnFamilyHandle*>* handles, DB** dbptr);
+ 
+diff --git a/include/rocksdb/env.h b/include/rocksdb/env.h
+index 5f299ee..53b3e89 100644
+--- a/include/rocksdb/env.h
++++ b/include/rocksdb/env.h
+@@ -216,7 +216,7 @@ class Env : public Customizable {
+   // implementation instead of relying on this default environment.
+   //
+   // The result of Default() belongs to rocksdb and must never be deleted.
+-  static Env* Default();
++  ROCKSDB_LIBRARY_API static Env* Default();
+ 
+   // See FileSystem::RegisterDbPaths.
+   virtual Status RegisterDbPaths(const std::vector<std::string>& /*paths*/) {
+diff --git a/include/rocksdb/ldb_tool.h b/include/rocksdb/ldb_tool.h
+index b8f2e22..70123d7 100644
+--- a/include/rocksdb/ldb_tool.h
++++ b/include/rocksdb/ldb_tool.h
+@@ -21,7 +21,7 @@ class SliceFormatter {
+ // Options for customizing ldb tool (beyond the DB Options)
+ struct LDBOptions {
+   // Create LDBOptions with default values for all fields
+-  LDBOptions();
++  ROCKSDB_LIBRARY_API LDBOptions();
+ 
+   // Key formatter that converts a slice to a readable string.
+   // Default: Slice::ToString()
+@@ -32,7 +32,7 @@ struct LDBOptions {
+ 
+ class LDBTool {
+  public:
+-  void Run(
++  ROCKSDB_LIBRARY_API void Run(
+       int argc, char** argv, Options db_options = Options(),
+       const LDBOptions& ldb_options = LDBOptions(),
+       const std::vector<ColumnFamilyDescriptor>* column_families = nullptr);
+diff --git a/include/rocksdb/options.h b/include/rocksdb/options.h
+index b27f53b..4142026 100644
+--- a/include/rocksdb/options.h
++++ b/include/rocksdb/options.h
+@@ -18,6 +18,7 @@
+ #include <unordered_map>
+ #include <vector>
+ 
++#include "c.h"
+ #include "rocksdb/advanced_options.h"
+ #include "rocksdb/comparator.h"
+ #include "rocksdb/compression_type.h"
+@@ -395,7 +396,7 @@ struct ColumnFamilyOptions : public AdvancedColumnFamilyOptions {
+   uint32_t uncache_aggressiveness = 0;
+ 
+   // Create ColumnFamilyOptions with default values for all fields
+-  ColumnFamilyOptions();
++  ROCKSDB_LIBRARY_API ColumnFamilyOptions();
+   // Create ColumnFamilyOptions from Options
+   explicit ColumnFamilyOptions(const Options& options);
+ 
+@@ -1081,7 +1082,7 @@ struct DBOptions {
+   bool use_adaptive_mutex = false;
+ 
+   // Create DBOptions with default values for all fields
+-  DBOptions();
++  ROCKSDB_LIBRARY_API DBOptions();
+   // Create DBOptions from Options
+   explicit DBOptions(const Options& options);
+ 
+diff --git a/include/rocksdb/slice_transform.h b/include/rocksdb/slice_transform.h
+index 166cbc9..6452874 100644
+--- a/include/rocksdb/slice_transform.h
++++ b/include/rocksdb/slice_transform.h
+@@ -123,7 +123,7 @@ class SliceTransform : public Customizable {
+ 
+ // The prefix is the first `prefix_len` bytes of the key, and keys shorter
+ // then `prefix_len` are not InDomain.
+-const SliceTransform* NewFixedPrefixTransform(size_t prefix_len);
++ROCKSDB_LIBRARY_API const SliceTransform* NewFixedPrefixTransform(size_t prefix_len);
+ 
+ // The prefix is the first min(length(key),`cap_len`) bytes of the key, and
+ // all keys are InDomain.
+diff --git a/include/rocksdb/sst_dump_tool.h b/include/rocksdb/sst_dump_tool.h
+index 0b81833..7a1cabb 100644
+--- a/include/rocksdb/sst_dump_tool.h
++++ b/include/rocksdb/sst_dump_tool.h
+@@ -10,7 +10,7 @@ namespace ROCKSDB_NAMESPACE {
+ 
+ class SSTDumpTool {
+  public:
+-  int Run(int argc, char const* const* argv, Options options = Options());
++  ROCKSDB_LIBRARY_API int Run(int argc, char const* const* argv, Options options = Options());
+ };
+ 
+ }  // namespace ROCKSDB_NAMESPACE
+diff --git a/include/rocksdb/status.h b/include/rocksdb/status.h
+index 8259723..937eed3 100644
+--- a/include/rocksdb/status.h
++++ b/include/rocksdb/status.h
+@@ -35,7 +35,7 @@ namespace ROCKSDB_NAMESPACE {
+ class Status {
+  public:
+   // Create a success status.
+-  Status()
++  ROCKSDB_LIBRARY_API Status()
+       : code_(kOk),
+         subcode_(kNone),
+         sev_(kNoError),
+@@ -486,7 +486,7 @@ class Status {
+ 
+   // Return a string representation of this status suitable for printing.
+   // Returns the string "OK" for success.
+-  std::string ToString() const;
++  ROCKSDB_LIBRARY_API std::string ToString() const;
+ 
+  protected:
+   Code code_;
+@@ -519,7 +519,7 @@ class Status {
+         data_loss_(data_loss),
+         scope_(scope) {}
+ 
+-  Status(Code _code, SubCode _subcode, const Slice& msg, const Slice& msg2,
++  ROCKSDB_LIBRARY_API Status(Code _code, SubCode _subcode, const Slice& msg, const Slice& msg2,
+          Severity sev = kNoError);
+   Status(Code _code, const Slice& msg, const Slice& msg2)
+       : Status(_code, kNone, msg, msg2) {}
+diff --git a/include/rocksdb/table.h b/include/rocksdb/table.h
+index e1f76fc..8c19ca6 100644
+--- a/include/rocksdb/table.h
++++ b/include/rocksdb/table.h
+@@ -791,7 +791,7 @@ struct PlainTableOptions {
+ // the hash bucket found, a binary search is executed for hash conflicts.
+ // Finally, a linear search is used.
+ 
+-TableFactory* NewPlainTableFactory(
++ROCKSDB_LIBRARY_API TableFactory* NewPlainTableFactory(
+     const PlainTableOptions& options = PlainTableOptions());
+ 
+ struct CuckooTablePropertyNames {
+diff --git a/monitoring/perf_context.cc b/monitoring/perf_context.cc
+index 2f25f68..5fee05a 100644
+--- a/monitoring/perf_context.cc
++++ b/monitoring/perf_context.cc
+@@ -4,6 +4,8 @@
+ //  (found in the LICENSE.Apache file in the root directory).
+ //
+ 
++#include <rocksdb/c.h>
++
+ #include <sstream>
+ 
+ #include "monitoring/perf_context_imp.h"
+@@ -167,7 +169,7 @@ struct PerfContextInt {
+ // Put here just to make get_perf_context() simple without ifdef.
+ PerfContext perf_context;
+ #else
+-thread_local PerfContext perf_context;
++ROCKSDB_LIBRARY_API thread_local PerfContext perf_context;
+ #endif
+ 
+ PerfContext* get_perf_context() {
+diff --git a/monitoring/perf_level.cc b/monitoring/perf_level.cc
+index 9ba4e01..aba7390 100644
+--- a/monitoring/perf_level.cc
++++ b/monitoring/perf_level.cc
+@@ -4,13 +4,15 @@
+ //  (found in the LICENSE.Apache file in the root directory).
+ //
+ 
++#include <rocksdb/c.h>
++
+ #include <cassert>
+ 
+ #include "monitoring/perf_level_imp.h"
+ 
+ namespace ROCKSDB_NAMESPACE {
+ 
+-thread_local PerfLevel perf_level = kEnableCount;
++ROCKSDB_LIBRARY_API thread_local PerfLevel perf_level = kEnableCount;
+ 
+ void SetPerfLevel(PerfLevel level) {
+   assert(level > kUninitialized);
+diff --git a/options/options.cc b/options/options.cc
+index 8336aaa..b3e4917 100644
+--- a/options/options.cc
++++ b/options/options.cc
+@@ -9,6 +9,8 @@
+ 
+ #include "rocksdb/options.h"
+ 
++#include <rocksdb/c.h>
++
+ #include <cinttypes>
+ #include <limits>
+ 
+diff --git a/table/block_based/block_based_table_factory.cc b/table/block_based/block_based_table_factory.cc
+index d461dc5..db39c31 100644
+--- a/table/block_based/block_based_table_factory.cc
++++ b/table/block_based/block_based_table_factory.cc
+@@ -946,7 +946,7 @@ Status GetBlockBasedTableOptionsFromMap(
+   return s;
+ }
+ 
+-TableFactory* NewBlockBasedTableFactory(
++ROCKSDB_LIBRARY_API TableFactory* NewBlockBasedTableFactory(
+     const BlockBasedTableOptions& _table_options) {
+   return new BlockBasedTableFactory(_table_options);
+ }
+diff --git a/table/block_based/filter_policy.cc b/table/block_based/filter_policy.cc
+index 049148a..752a29f 100644
+--- a/table/block_based/filter_policy.cc
++++ b/table/block_based/filter_policy.cc
+@@ -1814,7 +1814,7 @@ BuiltinFilterBitsReader* BuiltinFilterPolicy::GetBloomBitsReader(
+   return new AlwaysTrueFilter();
+ }
+ 
+-const FilterPolicy* NewBloomFilterPolicy(double bits_per_key,
++ROCKSDB_LIBRARY_API const FilterPolicy* NewBloomFilterPolicy(double bits_per_key,
+                                          bool /*use_block_based_builder*/) {
+   // NOTE: use_block_based_builder now ignored so block-based filter is no
+   // longer accessible in public API.
+diff --git a/tools/block_cache_analyzer/block_cache_trace_analyzer.cc b/tools/block_cache_analyzer/block_cache_trace_analyzer.cc
+index 3853266..8a658ab 100644
+--- a/tools/block_cache_analyzer/block_cache_trace_analyzer.cc
++++ b/tools/block_cache_analyzer/block_cache_trace_analyzer.cc
+@@ -2129,7 +2129,7 @@ std::vector<uint64_t> parse_buckets(const std::string& bucket_str) {
+   return buckets;
+ }
+ 
+-int block_cache_trace_analyzer_tool(int argc, char** argv) {
++ROCKSDB_LIBRARY_API int block_cache_trace_analyzer_tool(int argc, char** argv) {
+   ParseCommandLineFlags(&argc, &argv, true);
+   if (FLAGS_block_cache_trace_path.empty()) {
+     fprintf(stderr, "block cache trace path is empty\n");
+diff --git a/tools/db_sanity_test.cc b/tools/db_sanity_test.cc
+index dd4fd59..ca528b7 100644
+--- a/tools/db_sanity_test.cc
++++ b/tools/db_sanity_test.cc
+@@ -96,19 +96,22 @@ class SanityTestBasic : public SanityTest {
+   std::string Name() const override { return "Basic"; }
+ };
+ 
+-class SanityTestSpecialComparator : public SanityTest {
++class ROCKSDB_LIBRARY_API SanityTestSpecialComparator : public SanityTest {
+  public:
+   explicit SanityTestSpecialComparator(const std::string& path)
+       : SanityTest(path) {
+     options_.comparator = new NewComparator();
+   }
+-  ~SanityTestSpecialComparator() { delete options_.comparator; }
++  ROCKSDB_LIBRARY_API ~SanityTestSpecialComparator() { delete options_.comparator; }
+   Options GetOptions() const override { return options_; }
+   std::string Name() const override { return "SpecialComparator"; }
+ 
+  private:
+-  class NewComparator : public Comparator {
++  class ROCKSDB_LIBRARY_API NewComparator : public Comparator {
+    public:
++    ROCKSDB_LIBRARY_API NewComparator() = default;
++    ROCKSDB_LIBRARY_API ~NewComparator() = default;
++
+     const char* Name() const override { return "rocksdb.NewComparator"; }
+     int Compare(const Slice& a, const Slice& b) const override {
+       return BytewiseComparator()->Compare(a, b);
+diff --git a/tools/trace_analyzer_tool.cc b/tools/trace_analyzer_tool.cc
+index c484959..5580e91 100644
+--- a/tools/trace_analyzer_tool.cc
++++ b/tools/trace_analyzer_tool.cc
+@@ -1870,7 +1870,7 @@ Status TraceAnalyzer::WriteTraceSequence(const uint32_t& type,
+ }
+ 
+ // The entrance function of Trace_Analyzer
+-int trace_analyzer_tool(int argc, char** argv) {
++ROCKSDB_LIBRARY_API int trace_analyzer_tool(int argc, char** argv) {
+   std::string trace_path;
+   std::string output_path;
+ 
