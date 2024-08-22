@@ -19,6 +19,13 @@ ifeq ($(DEB_HOST_ARCH),mipsel)
 	export DEB_LDFLAGS_MAINT_APPEND= -latomic
 endif
 
+# Only do a strict symbol checking on Linux
+# https://manpages.debian.org/testing/dpkg-dev/dpkg-gensymbols.1.en.html
+# Level 4: Fails if some libraries have been introduced.
+ifneq (,$(filter linux,$(DEB_HOST_ARCH_OS)))
+    export DPKG_GENSYMBOLS_CHECK_LEVEL = 4
+endif
+
 # make build verbose
 export AM_DEFAULT_VERBOSITY=1
 
