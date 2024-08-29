@@ -43,6 +43,8 @@ override_dh_auto_configure:
 		 -DWITH_TOOLS=ON \
 		 -DWITH_TESTS=ON \
 		 -DPORTABLE=1 \
+		 -DCMAKE_BUILD_TYPE=Release \
+		 -DHIDE_PRIVATE_SYMBOLS=1 \
 		 -DFAIL_ON_WARNINGS=OFF
 
 override_dh_auto_test:
