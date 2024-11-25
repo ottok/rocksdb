@@ -1,14 +1,20 @@
-Description: limit block_size to 32 bit
- Make the block_size to 3 Gb only on i386 and mipsel.
-Author: Laszlo Boszormenyi (GCS) <gcs@debian.org>
+From: "Laszlo Boszormenyi (GCS)" <gcs@debian.org>
+Date: Sun, 24 Nov 2024 23:29:27 -0800
+Subject: limit block_size to 32 bit
+
 Forwarded: no
 Last-Update: 2021-10-16
 
+Make the block_size to 3 Gb only on i386 and mipsel.
 ---
+ db/db_test.cc | 4 ++++
+ 1 file changed, 4 insertions(+)
 
+diff --git a/db/db_test.cc b/db/db_test.cc
+index fe279e6..94b96bc 100644
 --- a/db/db_test.cc
 +++ b/db/db_test.cc
-@@ -6763,7 +6763,11 @@ TEST_F(DBTest, LargeBlockSizeTest) {
+@@ -7310,7 +7310,11 @@ TEST_F(DBTest, LargeBlockSizeTest) {
    CreateAndReopenWithCF({"pikachu"}, options);
    ASSERT_OK(Put(0, "foo", "bar"));
    BlockBasedTableOptions table_options;

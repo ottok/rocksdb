@@ -1,14 +1,19 @@
-Description: <short summary of the patch>
- .
+From: "Laszlo Boszormenyi (GCS)" <gcs@debian.org>
+Date: Sun, 24 Nov 2024 23:29:28 -0800
+Subject: <short summary of the patch>
+
 Forwarded: no
-Author: Laszlo Boszormenyi (GCS) <gcs@debian.org>
 Last-Update: 2021-10-16
-
 ---
+ CMakeLists.txt                  | 2 +-
+ cmake/modules/ReadVersion.cmake | 1 +
+ 2 files changed, 2 insertions(+), 1 deletion(-)
 
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 1f940b3..5857e8d 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -1012,7 +1012,7 @@ if(ROCKSDB_BUILD_SHARED)
+@@ -1155,7 +1155,7 @@ if(ROCKSDB_BUILD_SHARED)
      set_target_properties(${ROCKSDB_SHARED_LIB} PROPERTIES
                            LINKER_LANGUAGE CXX
                            VERSION ${rocksdb_VERSION}
@@ -17,9 +22,11 @@ Last-Update: 2021-10-16
                            OUTPUT_NAME "rocksdb${ARTIFACT_SUFFIX}")
    endif()
  endif()
+diff --git a/cmake/modules/ReadVersion.cmake b/cmake/modules/ReadVersion.cmake
+index ebfd7d6..e84e766 100644
 --- a/cmake/modules/ReadVersion.cmake
 +++ b/cmake/modules/ReadVersion.cmake
-@@ -6,5 +6,6 @@ function(get_rocksdb_version version_var
+@@ -6,5 +6,6 @@ function(get_rocksdb_version version_var)
      string(REGEX MATCH "#define ROCKSDB_${component} ([0-9]+)" _ ${version_header_file})
      set(ROCKSDB_VERSION_${component} ${CMAKE_MATCH_1})
    endforeach()

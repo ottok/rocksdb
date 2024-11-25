@@ -1,8 +1,16 @@
+From: "Laszlo Boszormenyi (GCS)" <gcs@debian.org>
+Date: Sun, 24 Nov 2024 23:29:27 -0800
+Subject: build_reproducible
+
+---
+ Makefile | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
 diff --git a/Makefile b/Makefile
-index a98aa5b..e58088d 100644
+index f22727f..0e2bdcc 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -670,7 +670,12 @@ ifndef NO_UPDATE_BUILD_VERSION
+@@ -790,7 +790,12 @@ ifndef NO_UPDATE_BUILD_VERSION
  
  # By default, use the current date-time as the date.  If there are no changes,
  # we will use the last commit date instead.

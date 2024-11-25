@@ -1,9 +1,19 @@
+From: "Laszlo Boszormenyi (GCS)" <gcs@debian.org>
+Date: Sun, 24 Nov 2024 23:29:28 -0800
+Subject: ppc64
+
 implement support for musl/ppc64
 
 Signed-off-by: Khem Raj <raj.khem@gmail.com>
+---
+ .../lock/range/range_tree/lib/portability/toku_time.h             | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h b/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h
+index 451959a..c285252 100644
 --- a/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h
 +++ b/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h
-@@ -58,7 +58,7 @@ Copyright (c) 2006, 2015, Percona and/or
+@@ -58,7 +58,7 @@ Copyright (c) 2006, 2015, Percona and/or its affiliates. All rights reserved.
  #include <stdint.h>
  #include <sys/time.h>
  #include <time.h>
@@ -12,7 +22,7 @@ Signed-off-by: Khem Raj <raj.khem@gmail.com>
  #include <sys/platform/ppc.h>
  #endif
  
-@@ -131,8 +131,12 @@ static inline tokutime_t toku_time_now(v
+@@ -131,8 +131,12 @@ static inline tokutime_t toku_time_now(void) {
    uint64_t result;
    __asm __volatile__("mrs %[rt], cntvct_el0" : [rt] "=r"(result));
    return result;
