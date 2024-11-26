@@ -2,6 +2,9 @@ Source: rocksdb
 Section: database
 Priority: optional
 Maintainer: Laszlo Boszormenyi (GCS) <gcs@debian.org>
+Uploaders:
+ Laszlo Boszormenyi (GCS) <gcs@debian.org>,
+ Otto Kekäläinen <otto@debian.org>,
 Build-Depends:
  cmake,
  debhelper-compat (= 13),
