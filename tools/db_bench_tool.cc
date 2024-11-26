@@ -544,11 +544,19 @@ DEFINE_int32(universal_compression_size_percent, -1,
              "The percentage of the database to compress for universal "
              "compaction. -1 means compress everything.");
 
+DEFINE_int32(universal_max_read_amp, -1,
+             "The limit on the number of sorted runs");
+
 DEFINE_bool(universal_allow_trivial_move, false,
             "Allow trivial move in universal compaction.");
 
 DEFINE_bool(universal_incremental, false,
             "Enable incremental compactions in universal compaction.");
+
+DEFINE_int32(
+    universal_stop_style,
+    (int32_t)ROCKSDB_NAMESPACE::CompactionOptionsUniversal().stop_style,
+    "Universal compaction stop style.");
 
 DEFINE_int64(cache_size, 32 << 20,  // 32MB
              "Number of bytes to use as a cache of uncompressed data");
@@ -633,6 +641,11 @@ DEFINE_bool(use_cache_jemalloc_no_dump_allocator, false,
 DEFINE_bool(use_cache_memkind_kmem_allocator, false,
             "Use memkind kmem allocator for block/blob cache.");
 
+DEFINE_bool(
+    decouple_partitioned_filters,
+    ROCKSDB_NAMESPACE::BlockBasedTableOptions().decouple_partitioned_filters,
+    "Decouple filter partitioning from index partitioning.");
+
 DEFINE_bool(partition_index_and_filters, false,
             "Partition index and filter blocks.");
 
@@ -703,6 +716,12 @@ DEFINE_bool(block_align,
 DEFINE_int64(prepopulate_block_cache, 0,
              "Pre-populate hot/warm blocks in block cache. 0 to disable and 1 "
              "to insert during flush");
+
+DEFINE_uint32(uncache_aggressiveness,
+              ROCKSDB_NAMESPACE::ColumnFamilyOptions().uncache_aggressiveness,
+              "Aggressiveness of erasing cache entries that are likely "
+              "obsolete. 0 = disabled, 1 = minimum, 100 = moderate, 10000 = "
+              "normal max");
 
 DEFINE_bool(use_data_block_hash_index, false,
             "if use kDataBlockBinaryAndHash "
@@ -1085,7 +1104,7 @@ DEFINE_double(blob_garbage_collection_force_threshold,
               ROCKSDB_NAMESPACE::AdvancedColumnFamilyOptions()
                   .blob_garbage_collection_force_threshold,
               "[Integrated BlobDB] The threshold for the ratio of garbage in "
-              "the oldest blob files for forcing garbage collection.");
+              "the eligible blob files for forcing garbage collection.");
 
 DEFINE_uint64(blob_compaction_readahead_size,
               ROCKSDB_NAMESPACE::AdvancedColumnFamilyOptions()
@@ -1260,6 +1279,9 @@ DEFINE_uint64(
 DEFINE_bool(
     auto_readahead_size, false,
     "When set true, RocksDB does auto tuning of readahead size during Scans");
+
+DEFINE_bool(paranoid_memory_checks, false,
+            "Sets CF option paranoid_memory_checks");
 
 static enum ROCKSDB_NAMESPACE::CompressionType StringToCompressionType(
     const char* ctype) {
@@ -1731,6 +1753,7 @@ DEFINE_bool(read_with_latest_user_timestamp, true,
             "If true, always use the current latest timestamp for read. If "
             "false, choose a random timestamp from the past.");
 
+DEFINE_string(cache_uri, "", "Full URI for creating a custom cache object");
 DEFINE_string(secondary_cache_uri, "",
               "Full URI for creating a custom secondary cache object");
 static class std::shared_ptr<ROCKSDB_NAMESPACE::SecondaryCache> secondary_cache;
@@ -3116,7 +3139,15 @@ class Benchmark {
     }
 
     std::shared_ptr<Cache> block_cache;
-    if (FLAGS_cache_type == "clock_cache") {
+    if (!FLAGS_cache_uri.empty()) {
+      Status s = Cache::CreateFromString(ConfigOptions(), FLAGS_cache_uri,
+                                         &block_cache);
+      if (block_cache == nullptr) {
+        fprintf(stderr, "No  cache registered matching string: %s status=%s\n",
+                FLAGS_cache_uri.c_str(), s.ToString().c_str());
+        exit(1);
+      }
+    } else if (FLAGS_cache_type == "clock_cache") {
       fprintf(stderr, "Old clock cache implementation has been removed.\n");
       exit(1);
     } else if (EndsWith(FLAGS_cache_type, "hyper_clock_cache")) {
@@ -4285,6 +4316,7 @@ class Benchmark {
         FLAGS_level_compaction_dynamic_level_bytes;
     options.max_bytes_for_level_multiplier =
         FLAGS_max_bytes_for_level_multiplier;
+    options.uncache_aggressiveness = FLAGS_uncache_aggressiveness;
     Status s =
         CreateMemTableRepFactory(config_options, &options.memtable_factory);
     if (!s.ok()) {
@@ -4347,6 +4379,8 @@ class Benchmark {
       } else {
         block_based_options.index_type = BlockBasedTableOptions::kBinarySearch;
       }
+      block_based_options.decouple_partitioned_filters =
+          FLAGS_decouple_partitioned_filters;
       if (FLAGS_partition_index_and_filters || FLAGS_partition_index) {
         if (FLAGS_index_with_first_key) {
           fprintf(stderr,
@@ -4664,10 +4698,14 @@ class Benchmark {
       options.compaction_options_universal.compression_size_percent =
           FLAGS_universal_compression_size_percent;
     }
+    options.compaction_options_universal.max_read_amp =
+        FLAGS_universal_max_read_amp;
     options.compaction_options_universal.allow_trivial_move =
         FLAGS_universal_allow_trivial_move;
     options.compaction_options_universal.incremental =
         FLAGS_universal_incremental;
+    options.compaction_options_universal.stop_style =
+        static_cast<CompactionStopStyle>(FLAGS_universal_stop_style);
     if (FLAGS_thread_status_per_interval > 0) {
       options.enable_thread_tracking = true;
     }
@@ -4713,6 +4751,7 @@ class Benchmark {
         FLAGS_memtable_protection_bytes_per_key;
     options.block_protection_bytes_per_key =
         FLAGS_block_protection_bytes_per_key;
+    options.paranoid_memory_checks = FLAGS_paranoid_memory_checks;
   }
 
   void InitializeOptionsGeneral(Options* opts) {

@@ -329,6 +329,10 @@ class ColumnFamilyData {
   void SetDropped();
   bool IsDropped() const { return dropped_.load(std::memory_order_relaxed); }
 
+  void SetFlushSkipReschedule();
+
+  bool GetAndClearFlushSkipReschedule();
+
   // thread-safe
   int NumberLevels() const { return ioptions_.num_levels; }
 
@@ -397,6 +401,7 @@ class ColumnFamilyData {
                          SequenceNumber earliest_seq);
 
   TableCache* table_cache() const { return table_cache_.get(); }
+  BlobFileCache* blob_file_cache() const { return blob_file_cache_.get(); }
   BlobSource* blob_source() const { return blob_source_.get(); }
 
   // See documentation in compaction_picker.h
@@ -507,8 +512,6 @@ class ColumnFamilyData {
     return initial_cf_options_;
   }
 
-  Env::WriteLifeTimeHint CalculateSSTWriteHint(int level);
-
   // created_dirs remembers directory created, so that we don't need to call
   // the same data creation operation again.
   Status AddDirectories(
@@ -568,6 +571,10 @@ class ColumnFamilyData {
   // of its files (if missing)
   void RecoverEpochNumbers();
 
+  int GetUnflushedMemTableCountForWriteStallCheck() const {
+    return (mem_->IsEmpty() ? 0 : 1) + imm_.NumNotFlushed();
+  }
+
  private:
   friend class ColumnFamilySet;
   ColumnFamilyData(uint32_t id, const std::string& name,
@@ -591,6 +598,15 @@ class ColumnFamilyData {
   std::atomic<int> refs_;  // outstanding references to ColumnFamilyData
   std::atomic<bool> initialized_;
   std::atomic<bool> dropped_;  // true if client dropped it
+
+  // When user-defined timestamps in memtable only feature is enabled, this
+  // flag indicates a successfully requested flush that should
+  // skip being rescheduled and haven't undergone the rescheduling check yet.
+  // This flag is cleared when a check skips rescheduling a FlushRequest.
+  // With this flag, automatic flushes in regular cases can continue to
+  // retain UDTs by getting rescheduled as usual while manual flushes and
+  // error recovery flushes will proceed without getting rescheduled.
+  std::atomic<bool> flush_skip_reschedule_;
 
   const InternalKeyComparator internal_comparator_;
   InternalTblPropCollFactories internal_tbl_prop_coll_factories_;

@@ -168,12 +168,14 @@ struct MutableCFOptions {
         memtable_protection_bytes_per_key(
             options.memtable_protection_bytes_per_key),
         block_protection_bytes_per_key(options.block_protection_bytes_per_key),
+        paranoid_memory_checks(options.paranoid_memory_checks),
         sample_for_compression(
             options.sample_for_compression),  // TODO: is 0 fine here?
         compression_per_level(options.compression_per_level),
         memtable_max_range_deletions(options.memtable_max_range_deletions),
         bottommost_file_compaction_delay(
-            options.bottommost_file_compaction_delay) {
+            options.bottommost_file_compaction_delay),
+        uncache_aggressiveness(options.uncache_aggressiveness) {
     RefreshDerivedOptions(options.num_levels, options.compaction_style);
   }
 
@@ -223,7 +225,9 @@ struct MutableCFOptions {
         memtable_protection_bytes_per_key(0),
         block_protection_bytes_per_key(0),
         sample_for_compression(0),
-        memtable_max_range_deletions(0) {}
+        memtable_max_range_deletions(0),
+        bottommost_file_compaction_delay(0),
+        uncache_aggressiveness(0) {}
 
   explicit MutableCFOptions(const Options& options);
 
@@ -314,11 +318,13 @@ struct MutableCFOptions {
   Temperature default_write_temperature;
   uint32_t memtable_protection_bytes_per_key;
   uint8_t block_protection_bytes_per_key;
+  bool paranoid_memory_checks;
 
   uint64_t sample_for_compression;
   std::vector<CompressionType> compression_per_level;
   uint32_t memtable_max_range_deletions;
   uint32_t bottommost_file_compaction_delay;
+  uint32_t uncache_aggressiveness;
 
   // Derived options
   // Per-level target file size.

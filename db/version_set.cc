@@ -44,8 +44,8 @@
 #include "table/compaction_merging_iterator.h"
 
 #if USE_COROUTINES
-#include "folly/experimental/coro/BlockingWait.h"
-#include "folly/experimental/coro/Collect.h"
+#include "folly/coro/BlockingWait.h"
+#include "folly/coro/Collect.h"
 #endif
 #include "file/filename.h"
 #include "file/random_access_file_reader.h"
@@ -857,10 +857,14 @@ Version::~Version() {
       f->refs--;
       if (f->refs <= 0) {
         assert(cfd_ != nullptr);
+        // When not in the process of closing the DB, we'll have a superversion
+        // to get current mutable options from
+        auto* sv = cfd_->GetSuperVersion();
         uint32_t path_id = f->fd.GetPathId();
         assert(path_id < cfd_->ioptions()->cf_paths.size());
         vset_->obsolete_files_.emplace_back(
             f, cfd_->ioptions()->cf_paths[path_id].path,
+            sv ? sv->mutable_cf_options.uncache_aggressiveness : 0,
             cfd_->GetFileMetadataCacheReservationManager());
       }
     }
@@ -972,7 +976,8 @@ class LevelIterator final : public InternalIterator {
       const std::vector<AtomicCompactionUnitBoundary>* compaction_boundaries =
           nullptr,
       bool allow_unprepared_value = false,
-      TruncatedRangeDelIterator**** range_tombstone_iter_ptr_ = nullptr)
+      std::unique_ptr<TruncatedRangeDelIterator>*** range_tombstone_iter_ptr_ =
+          nullptr)
       : table_cache_(table_cache),
         read_options_(read_options),
         file_options_(file_options),
@@ -1045,6 +1050,11 @@ class LevelIterator final : public InternalIterator {
     return file_iter_.value();
   }
 
+  uint64_t write_unix_time() const override {
+    assert(Valid());
+    return file_iter_.write_unix_time();
+  }
+
   Status status() const override {
     return file_iter_.iter() ? file_iter_.status() : Status::OK();
   }
@@ -1112,9 +1122,8 @@ class LevelIterator final : public InternalIterator {
   }
 
   void ClearRangeTombstoneIter() {
-    if (range_tombstone_iter_ && *range_tombstone_iter_) {
-      delete *range_tombstone_iter_;
-      *range_tombstone_iter_ = nullptr;
+    if (range_tombstone_iter_) {
+      range_tombstone_iter_->reset();
     }
   }
 
@@ -1197,7 +1206,7 @@ class LevelIterator final : public InternalIterator {
   // iterator end).
   //
   // *range_tombstone_iter_ points to range tombstones of the current SST file
-  TruncatedRangeDelIterator** range_tombstone_iter_;
+  std::unique_ptr<TruncatedRangeDelIterator>* range_tombstone_iter_;
 
   // The sentinel key to be returned
   Slice sentinel_;
@@ -1276,11 +1285,9 @@ void LevelIterator::Seek(const Slice& target) {
                                           ts_sz);
       if (prefix_extractor_->InDomain(target_user_key_without_ts) &&
           (!prefix_extractor_->InDomain(next_file_first_user_key_without_ts) ||
-           user_comparator_.CompareWithoutTimestamp(
-               prefix_extractor_->Transform(target_user_key_without_ts), false,
-               prefix_extractor_->Transform(
-                   next_file_first_user_key_without_ts),
-               false) != 0)) {
+           prefix_extractor_->Transform(target_user_key_without_ts)
+                   .compare(prefix_extractor_->Transform(
+                       next_file_first_user_key_without_ts)) != 0)) {
         // SkipEmptyFileForward() will not advance to next file when this flag
         // is set for reason detailed below.
         //
@@ -1925,7 +1932,7 @@ InternalIterator* Version::TEST_GetLevelIterator(
     int level, bool allow_unprepared_value) {
   auto* arena = merge_iter_builder->GetArena();
   auto* mem = arena->AllocateAligned(sizeof(LevelIterator));
-  TruncatedRangeDelIterator*** tombstone_iter_ptr = nullptr;
+  std::unique_ptr<TruncatedRangeDelIterator>** tombstone_iter_ptr = nullptr;
   auto level_iter = new (mem) LevelIterator(
       cfd_->table_cache(), read_options, file_options_,
       cfd_->internal_comparator(), &storage_info_.LevelFilesBrief(level),
@@ -2025,7 +2032,7 @@ void Version::AddIteratorsForLevel(const ReadOptions& read_options,
   auto* arena = merge_iter_builder->GetArena();
   if (level == 0) {
     // Merge all level zero files together since they may overlap
-    TruncatedRangeDelIterator* tombstone_iter = nullptr;
+    std::unique_ptr<TruncatedRangeDelIterator> tombstone_iter = nullptr;
     for (size_t i = 0; i < storage_info_.LevelFilesBrief(0).num_files; i++) {
       const auto& file = storage_info_.LevelFilesBrief(0).files[i];
       auto table_iter = cfd_->table_cache()->NewIterator(
@@ -2042,8 +2049,8 @@ void Version::AddIteratorsForLevel(const ReadOptions& read_options,
       if (read_options.ignore_range_deletions) {
         merge_iter_builder->AddIterator(table_iter);
       } else {
-        merge_iter_builder->AddPointAndTombstoneIterator(table_iter,
-                                                         tombstone_iter);
+        merge_iter_builder->AddPointAndTombstoneIterator(
+            table_iter, std::move(tombstone_iter));
       }
     }
     if (should_sample) {
@@ -2060,7 +2067,7 @@ void Version::AddIteratorsForLevel(const ReadOptions& read_options,
     // walks through the non-overlapping files in the level, opening them
     // lazily.
     auto* mem = arena->AllocateAligned(sizeof(LevelIterator));
-    TruncatedRangeDelIterator*** tombstone_iter_ptr = nullptr;
+    std::unique_ptr<TruncatedRangeDelIterator>** tombstone_iter_ptr = nullptr;
     auto level_iter = new (mem) LevelIterator(
         cfd_->table_cache(), read_options, soptions,
         cfd_->internal_comparator(), &storage_info_.LevelFilesBrief(level),
@@ -3501,6 +3508,10 @@ void VersionStorageInfo::ComputeCompactionScore(
           score = kScoreForNeedCompaction;
         }
       } else {
+        // For universal compaction, if a user configures `max_read_amp`, then
+        // the score may be a false positive signal.
+        // `level0_file_num_compaction_trigger` is used as a trigger to check
+        // if there is any compaction work to do.
         score = static_cast<double>(num_sorted_runs) /
                 mutable_cf_options.level0_file_num_compaction_trigger;
         if (compaction_style_ == kCompactionStyleLevel && num_levels() > 1) {
@@ -3766,14 +3777,17 @@ void VersionStorageInfo::ComputeFilesMarkedForForcedBlobGC(
     return;
   }
 
-  // Compute the sum of total and garbage bytes over the oldest batch of blob
-  // files. The oldest batch is defined as the set of blob files which are
-  // kept alive by the same SSTs as the very oldest one. Here is a toy example.
-  // Let's assume we have three SSTs 1, 2, and 3, and four blob files 10, 11,
-  // 12, and 13. Also, let's say SSTs 1 and 2 both rely on blob file 10 and
-  // potentially some higher-numbered ones, while SST 3 relies on blob file 12
-  // and potentially some higher-numbered ones. Then, the SST to oldest blob
-  // file mapping is as follows:
+  // Compute the sum of total and garbage bytes over the batch of blob files
+  // currently eligible for garbage collection based on
+  // blob_garbage_collection_age_cutoff, and if the garbage ratio exceeds
+  // blob_garbage_collection_force_threshold, schedule compaction for the
+  // SST files that reference the oldest batch of blob files. Here is a toy
+  // example. Let's assume we have three SSTs 1, 2, and 3, and four blob files
+  // 10, 11, 12, and 13, which correspond to the range that is eligible for GC
+  // and satisfy the garbage ratio threshold. Also, let's say SSTs 1 and 2 both
+  // rely on blob file 10 and potentially some higher-numbered ones, while SST 3
+  // relies on blob file 12 and potentially some higher-numbered ones. Then, the
+  // SST to oldest blob file mapping is as follows:
   //
   // SST file number               Oldest blob file number
   // 1                             10
@@ -3791,11 +3805,6 @@ void VersionStorageInfo::ComputeFilesMarkedForForcedBlobGC(
   //
   // Then, the oldest batch of blob files consists of blob files 10 and 11,
   // and we can get rid of them by forcing the compaction of SSTs 1 and 2.
-  //
-  // Note that the overall ratio of garbage computed for the batch has to exceed
-  // blob_garbage_collection_force_threshold and the entire batch has to be
-  // eligible for GC according to blob_garbage_collection_age_cutoff in order
-  // for us to schedule any compactions.
   const auto& oldest_meta = blob_files_.front();
   assert(oldest_meta);
 
@@ -3812,23 +3821,8 @@ void VersionStorageInfo::ComputeFilesMarkedForForcedBlobGC(
     const auto& meta = blob_files_[count];
     assert(meta);
 
-    if (!meta->GetLinkedSsts().empty()) {
-      // Found the beginning of the next batch of blob files
-      break;
-    }
-
     sum_total_blob_bytes += meta->GetTotalBlobBytes();
     sum_garbage_blob_bytes += meta->GetGarbageBlobBytes();
-  }
-
-  if (count < blob_files_.size()) {
-    const auto& meta = blob_files_[count];
-    assert(meta);
-
-    if (meta->GetLinkedSsts().empty()) {
-      // Some files in the oldest batch are not eligible for GC
-      return;
-    }
   }
 
   if (sum_garbage_blob_bytes <
@@ -4913,6 +4907,27 @@ bool VersionStorageInfo::RangeMightExistAfterSortedRun(
   return false;
 }
 
+Env::WriteLifeTimeHint VersionStorageInfo::CalculateSSTWriteHint(
+    int level) const {
+  if (compaction_style_ != kCompactionStyleLevel) {
+    return Env::WLTH_NOT_SET;
+  }
+  if (level == 0) {
+    return Env::WLTH_MEDIUM;
+  }
+
+  // L1: medium, L2: long, ...
+  if (level - base_level_ >= 2) {
+    return Env::WLTH_EXTREME;
+  } else if (level < base_level_) {
+    // There is no restriction which prevents level passed in to be smaller
+    // than base_level.
+    return Env::WLTH_MEDIUM;
+  }
+  return static_cast<Env::WriteLifeTimeHint>(
+      level - base_level_ + static_cast<int>(Env::WLTH_MEDIUM));
+}
+
 void Version::AddLiveFiles(std::vector<uint64_t>* live_table_files,
                            std::vector<uint64_t>* live_blob_files) const {
   assert(live_table_files);
@@ -5116,6 +5131,7 @@ VersionSet::VersionSet(
       fs_(_db_options->fs, io_tracer),
       clock_(_db_options->clock),
       dbname_(dbname),
+      db_id_(db_id),
       db_options_(_db_options),
       next_file_number_(2),
       manifest_file_number_(0),  // Filled by Recover()
@@ -5188,13 +5204,21 @@ Status VersionSet::Close(FSDirectory* db_dir, InstrumentedMutex* mu) {
 }
 
 VersionSet::~VersionSet() {
-  // we need to delete column_family_set_ because its destructor depends on
-  // VersionSet
+  // Must clean up column families to make all files "obsolete"
   column_family_set_.reset();
+
   for (auto& file : obsolete_files_) {
     if (file.metadata->table_reader_handle) {
-      table_cache_->Release(file.metadata->table_reader_handle);
-      TableCache::Evict(table_cache_, file.metadata->fd.GetNumber());
+      // NOTE: DB is shutting down, so file is probably not obsolete, just
+      // no longer referenced by Versions in memory.
+      // For more context, see comment on "table_cache_->EraseUnRefEntries()"
+      // in DBImpl::CloseHelper().
+      // Using uncache_aggressiveness=0 overrides any previous marking to
+      // attempt to uncache the file's blocks (which after cleaning up
+      // column families could cause use-after-free)
+      TableCache::ReleaseObsolete(table_cache_,
+                                  file.metadata->table_reader_handle,
+                                  /*uncache_aggressiveness=*/0);
     }
     file.DeleteMetadata();
   }
@@ -5494,8 +5518,13 @@ Status VersionSet::ProcessManifestWrites(
   Status s;
   IOStatus io_s;
   IOStatus manifest_io_status;
+  std::unique_ptr<log::Writer> new_desc_log_ptr;
   {
     FileOptions opt_file_opts = fs_->OptimizeForManifestWrite(file_options_);
+    // DB option (in file_options_) takes precedence when not kUnknown
+    if (file_options_.temperature != Temperature::kUnknown) {
+      opt_file_opts.temperature = file_options_.temperature;
+    }
     mu->Unlock();
     TEST_SYNC_POINT("VersionSet::LogAndApply:WriteManifestStart");
     TEST_SYNC_POINT_CALLBACK("VersionSet::LogAndApply:WriteManifest", nullptr);
@@ -5522,6 +5551,7 @@ Status VersionSet::ProcessManifestWrites(
       }
     }
 
+    log::Writer* raw_desc_log_ptr = descriptor_log_.get();
     if (s.ok() && new_descriptor_log) {
       // This is fine because everything inside of this block is serialized --
       // only one thread can be here at the same time
@@ -5543,12 +5573,14 @@ Status VersionSet::ProcessManifestWrites(
             db_options_->listeners, nullptr,
             tmp_set.Contains(FileType::kDescriptorFile),
             tmp_set.Contains(FileType::kDescriptorFile)));
-        descriptor_log_.reset(
+        new_desc_log_ptr.reset(
             new log::Writer(std::move(file_writer), 0, false));
+        raw_desc_log_ptr = new_desc_log_ptr.get();
         s = WriteCurrentStateToManifest(write_options, curr_state,
-                                        wal_additions, descriptor_log_.get(),
-                                        io_s);
-      } else {
+                                        wal_additions, raw_desc_log_ptr, io_s);
+        assert(s == io_s);
+      }
+      if (!io_s.ok()) {
         manifest_io_status = io_s;
         s = io_s;
       }
@@ -5591,7 +5623,7 @@ Status VersionSet::ProcessManifestWrites(
         }
         ++idx;
 #endif /* !NDEBUG */
-        io_s = descriptor_log_->AddRecord(write_options, record);
+        io_s = raw_desc_log_ptr->AddRecord(write_options, record);
         if (!io_s.ok()) {
           s = io_s;
           manifest_io_status = io_s;
@@ -5601,7 +5633,7 @@ Status VersionSet::ProcessManifestWrites(
 
       if (s.ok()) {
         io_s =
-            SyncManifest(db_options_, write_options, descriptor_log_->file());
+            SyncManifest(db_options_, write_options, raw_desc_log_ptr->file());
         manifest_io_status = io_s;
         TEST_SYNC_POINT_CALLBACK(
             "VersionSet::ProcessManifestWrites:AfterSyncManifest", &io_s);
@@ -5619,9 +5651,9 @@ Status VersionSet::ProcessManifestWrites(
       assert(manifest_io_status.ok());
     }
     if (s.ok() && new_descriptor_log) {
-      io_s = SetCurrentFile(write_options, fs_.get(), dbname_,
-                            pending_manifest_file_number_,
-                            dir_contains_current_file);
+      io_s = SetCurrentFile(
+          write_options, fs_.get(), dbname_, pending_manifest_file_number_,
+          file_options_.temperature, dir_contains_current_file);
       if (!io_s.ok()) {
         s = io_s;
         // Quarantine old manifest file in case new manifest file's CURRENT file
@@ -5634,7 +5666,7 @@ Status VersionSet::ProcessManifestWrites(
 
     if (s.ok()) {
       // find offset in manifest file where this version is stored.
-      new_manifest_file_size = descriptor_log_->file()->GetFileSize();
+      new_manifest_file_size = raw_desc_log_ptr->file()->GetFileSize();
     }
 
     if (first_writer.edit_list.front()->IsColumnFamilyDrop()) {
@@ -5680,6 +5712,7 @@ Status VersionSet::ProcessManifestWrites(
   // Append the old manifest file to the obsolete_manifest_ list to be deleted
   // by PurgeObsoleteFiles later.
   if (s.ok() && new_descriptor_log) {
+    descriptor_log_ = std::move(new_desc_log_ptr);
     obsolete_manifests_.emplace_back(
         DescriptorFileName("", manifest_file_number_));
   }
@@ -5749,14 +5782,11 @@ Status VersionSet::ProcessManifestWrites(
     for (auto v : versions) {
       delete v;
     }
-    if (manifest_io_status.ok()) {
-      manifest_file_number_ = pending_manifest_file_number_;
-      manifest_file_size_ = new_manifest_file_size;
-    }
     // If manifest append failed for whatever reason, the file could be
     // corrupted. So we need to force the next version update to start a
     // new manifest file.
     descriptor_log_.reset();
+    new_desc_log_ptr.reset();
     // If manifest operations failed, then we know the CURRENT file still
     // points to the original MANIFEST. Therefore, we can safely delete the
     // new MANIFEST.
@@ -5783,7 +5813,7 @@ Status VersionSet::ProcessManifestWrites(
     // a) CURRENT points to the new MANIFEST, and the new MANIFEST is present.
     // b) CURRENT points to the original MANIFEST, and the original MANIFEST
     //    also exists.
-    if (new_descriptor_log && !manifest_io_status.ok()) {
+    if (!manifest_io_status.ok() && new_descriptor_log) {
       ROCKS_LOG_INFO(db_options_->info_log,
                      "Deleting manifest %" PRIu64 " current manifest %" PRIu64
                      "\n",
@@ -6064,7 +6094,8 @@ Status VersionSet::Recover(
     VersionEditHandler handler(
         read_only, column_families, const_cast<VersionSet*>(this),
         /*track_found_and_missing_files=*/false, no_error_if_files_missing,
-        io_tracer_, read_options, EpochNumberRequirement::kMightMissing);
+        io_tracer_, read_options, /*allow_incomplete_valid_version=*/false,
+        EpochNumberRequirement::kMightMissing);
     handler.Iterate(reader, &log_read_status);
     s = handler.status();
     if (s.ok()) {
@@ -6240,7 +6271,8 @@ Status VersionSet::TryRecoverFromOneManifest(
                      /*checksum=*/true, /*log_num=*/0);
   VersionEditHandlerPointInTime handler_pit(
       read_only, column_families, const_cast<VersionSet*>(this), io_tracer_,
-      read_options, EpochNumberRequirement::kMightMissing);
+      read_options, /*allow_incomplete_valid_version=*/true,
+      EpochNumberRequirement::kMightMissing);
 
   handler_pit.Iterate(reader, &s);
 
@@ -7062,8 +7094,8 @@ InternalIterator* VersionSet::MakeInputIterator(
   // that will be initialized to where CompactionMergingIterator stores
   // pointer to its range tombstones. This is used by LevelIterator
   // to update pointer to range tombstones as it traverse different SST files.
-  std::vector<
-      std::pair<TruncatedRangeDelIterator*, TruncatedRangeDelIterator***>>
+  std::vector<std::pair<std::unique_ptr<TruncatedRangeDelIterator>,
+                        std::unique_ptr<TruncatedRangeDelIterator>**>>
       range_tombstones;
   size_t num = 0;
   for (size_t which = 0; which < c->num_input_levels(); which++) {
@@ -7085,7 +7117,8 @@ InternalIterator* VersionSet::MakeInputIterator(
                   *end, fmd.smallest.user_key()) < 0) {
             continue;
           }
-          TruncatedRangeDelIterator* range_tombstone_iter = nullptr;
+          std::unique_ptr<TruncatedRangeDelIterator> range_tombstone_iter =
+              nullptr;
           list[num++] = cfd->table_cache()->NewIterator(
               read_options, file_options_compactions,
               cfd->internal_comparator(), fmd, range_del_agg,
@@ -7102,11 +7135,13 @@ InternalIterator* VersionSet::MakeInputIterator(
               c->mutable_cf_options()->block_protection_bytes_per_key,
               /*range_del_read_seqno=*/nullptr,
               /*range_del_iter=*/&range_tombstone_iter);
-          range_tombstones.emplace_back(range_tombstone_iter, nullptr);
+          range_tombstones.emplace_back(std::move(range_tombstone_iter),
+                                        nullptr);
         }
       } else {
         // Create concatenating iterator for the files from this level
-        TruncatedRangeDelIterator*** tombstone_iter_ptr = nullptr;
+        std::unique_ptr<TruncatedRangeDelIterator>** tombstone_iter_ptr =
+            nullptr;
         list[num++] = new LevelIterator(
             cfd->table_cache(), read_options, file_options_compactions,
             cfd->internal_comparator(), c->input_levels(which),
@@ -7458,7 +7493,7 @@ Status ReactiveVersionSet::ReadAndApply(
     *cfds_changed = std::move(manifest_tailer_->GetUpdatedColumnFamilies());
   }
   if (files_to_delete) {
-    *files_to_delete = std::move(manifest_tailer_->GetIntermediateFiles());
+    *files_to_delete = manifest_tailer_->GetAndClearIntermediateFiles();
   }
 
   return s;

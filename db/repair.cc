@@ -443,7 +443,8 @@ class Repairer {
       ro.total_order_seek = true;
       Arena arena;
       ScopedArenaPtr<InternalIterator> iter(
-          mem->NewIterator(ro, /*seqno_to_time_mapping=*/nullptr, &arena));
+          mem->NewIterator(ro, /*seqno_to_time_mapping=*/nullptr, &arena,
+                           /*prefix_extractor=*/nullptr));
       int64_t _current_time = 0;
       immutable_db_options_.clock->GetCurrentTime(&_current_time)
           .PermitUncheckedError();  // ignore error
@@ -451,7 +452,8 @@ class Repairer {
       meta.file_creation_time = current_time;
       SnapshotChecker* snapshot_checker = DisableGCSnapshotChecker::Instance();
 
-      auto write_hint = cfd->CalculateSSTWriteHint(0);
+      auto write_hint =
+          cfd->current()->storage_info()->CalculateSSTWriteHint(/*level=*/0);
       std::vector<std::unique_ptr<FragmentedRangeTombstoneIterator>>
           range_del_iters;
       auto range_del_iter = mem->NewRangeTombstoneIterator(
@@ -480,9 +482,10 @@ class Repairer {
           dbname_, /* versions */ nullptr, immutable_db_options_, tboptions,
           file_options_, table_cache_.get(), iter.get(),
           std::move(range_del_iters), &meta, nullptr /* blob_file_additions */,
-          {}, kMaxSequenceNumber, kMaxSequenceNumber, snapshot_checker,
-          false /* paranoid_file_checks*/, nullptr /* internal_stats */, &io_s,
-          nullptr /*IOTracer*/, BlobFileCreationReason::kRecovery,
+          {}, kMaxSequenceNumber, kMaxSequenceNumber, kMaxSequenceNumber,
+          snapshot_checker, false /* paranoid_file_checks*/,
+          nullptr /* internal_stats */, &io_s, nullptr /*IOTracer*/,
+          BlobFileCreationReason::kRecovery,
           nullptr /* seqno_to_time_mapping */, nullptr /* event_logger */,
           0 /* job_id */, nullptr /* table_properties */, write_hint);
       ROCKS_LOG_INFO(db_options_.info_log,
