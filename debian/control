@@ -24,7 +24,7 @@ Depends:
  libbz2-dev,
  libgflags-dev,
  liblz4-dev,
- librocksdb9.3 (= ${binary:Version}),
+ librocksdb9.7 (= ${binary:Version}),
  libsnappy-dev,
  libzstd-dev,
  zlib1g-dev,
@@ -53,7 +53,7 @@ Description: persistent Key-Value Store for Flash and RAM Storage (development)
  This package contains libraries and header files for developing
  applications that use librocksdb .
 
-Package: librocksdb9.3
+Package: librocksdb9.7
 Section: libs
 Architecture: amd64 arm64 armel armhf i386 loong64 mips mips64el mipsel ppc64el riscv64 s390x
 Depends:
