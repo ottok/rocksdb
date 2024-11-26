@@ -11,10 +11,10 @@ Make the block_size to 3 Gb only on i386 and mipsel.
  1 file changed, 4 insertions(+)
 
 diff --git a/db/db_test.cc b/db/db_test.cc
-index fe279e6..94b96bc 100644
+index fbcff5b..17c2ed0 100644
 --- a/db/db_test.cc
 +++ b/db/db_test.cc
-@@ -7310,7 +7310,11 @@ TEST_F(DBTest, LargeBlockSizeTest) {
+@@ -7318,7 +7318,11 @@ TEST_F(DBTest, LargeBlockSizeTest) {
    CreateAndReopenWithCF({"pikachu"}, options);
    ASSERT_OK(Put(0, "foo", "bar"));
    BlockBasedTableOptions table_options;

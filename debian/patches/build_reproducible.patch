@@ -7,10 +7,10 @@ Subject: build_reproducible
  1 file changed, 6 insertions(+), 1 deletion(-)
 
 diff --git a/Makefile b/Makefile
-index f22727f..0e2bdcc 100644
+index e6e5765..b0af10d 100644
 --- a/Makefile
 +++ b/Makefile
-@@ -790,7 +790,12 @@ ifndef NO_UPDATE_BUILD_VERSION
+@@ -818,7 +818,12 @@ ifndef NO_UPDATE_BUILD_VERSION
  
  # By default, use the current date-time as the date.  If there are no changes,
  # we will use the last commit date instead.

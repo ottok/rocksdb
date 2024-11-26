@@ -31,7 +31,7 @@ Forwarded: no
  1 file changed, 11 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 5857e8d..308c273 100644
+index 1833a5d..bcdaab8 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -229,17 +229,6 @@ endif()

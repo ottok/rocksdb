@@ -1,3 +1,15 @@
+rocksdb (9.7.4-1) UNRELEASED; urgency=medium
+
+  * New upstream release 9.7.4 with plenty of changes, see
+    - https://github.com/facebook/rocksdb/releases/tag/v9.7.4
+    - https://github.com/facebook/rocksdb/releases/tag/v9.6.1
+    - https://github.com/facebook/rocksdb/releases/tag/v9.5.2
+    - https://github.com/facebook/rocksdb/releases/tag/v9.4.0
+  * Extend gbp.conf and write a README.source.md about package maintenance
+    (Closes: #1070099)
+
+ -- Otto Kekäläinen <otto@debian.org>  Mon, 25 Nov 2024 20:59:47 -0800
+
 rocksdb (9.3.1-1) unstable; urgency=medium
 
   * New major upstream release.
