@@ -13,8 +13,53 @@ include:
 # something specific to the Salsa runners.
 variables:
   SALSA_CI_DISABLE_REPROTEST: 1
+  SALSA_CI_DISABLE_REVERSE_DEPENDENCIES: 0
 
 # If Salsa-CI is not running at
 # https://salsa.debian.org/%{project_path}/-/pipelines, ensure that
 # https://salsa.debian.org/%{project_path}/-/settings/ci_cd has in field "CI/CD
 # configuration file" filename "debian/salsa-ci.yml"
+
+.provisioning-extract-reverse-dependencies: &provisioning-extract-reverse-dependencies
+  stage: provisioning
+  image: $SALSA_CI_IMAGES_GBP
+  rules:
+    - if: $SALSA_CI_DISABLE_REVERSE_DEPENDENCIES !~ /^(1|yes|true)$/
+  dependencies: []
+  extends:
+    - .artifacts-default-expire
+  script:
+    - mkdir -vp ${WORKING_DIR}
+    - rm -f /etc/apt/apt.conf.d/* /etc/apt/apt.conf
+    - echo 'Acquire::CompressionTypes::Order { "uncompressed"; };' > /etc/apt/apt.conf
+    - rm -rf /var/lib/apt/* /var/cache/apt/*
+    - apt-get update
+    - eatmydata apt-get -y install devscripts tree dose-extra jq dctrl-tools wget
+    - |
+      for p in $(grep '^Package: ' debian/control |sed 's,Package: ,,'); do
+          echo $p
+          build-rdeps --only-main -q $p > rdeps.txt
+      done
+      cat rdeps.txt | sort | uniq > rdeps2.txt
+      wget -nv -O- 'https://salsa.debian.org/jas/my-salsa-pipeline/-/raw/main/ci-template.yml' > ${WORKING_DIR}/reverse-dependencies.yml
+      cat rdeps2.txt | while read p; do
+          printf "\nbuild-rdep-$p:\n  variables:\n    REVERSE_DEP: $p\n  extends: .rdep-build-definition\n  needs:\n  - pipeline: \$PARENT_PIPELINE_ID\n    job: build\n" >> ${WORKING_DIR}/reverse-dependencies.yml
+      done
+
+.build-reverse-dependencies: &build-reverse-dependencies
+  stage: test
+  rules:
+    - if: $SALSA_CI_DISABLE_REVERSE_DEPENDENCIES !~ /^(1|yes|true)$/
+  trigger:
+    include:
+      - artifact: debian/output/reverse-dependencies.yml
+        job: extract-reverse-dependencies
+    strategy: depend
+  variables:
+    PARENT_PIPELINE_ID: $CI_PIPELINE_ID
+
+extract-reverse-dependencies:
+  extends: .provisioning-extract-reverse-dependencies
+
+build-reverse-dependencies:
+  extends: .build-reverse-dependencies
