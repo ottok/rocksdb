@@ -2,6 +2,8 @@
 include:
   - https://salsa.debian.org/salsa-ci-team/pipeline/raw/master/salsa-ci.yml
   - https://salsa.debian.org/salsa-ci-team/pipeline/raw/master/pipeline-jobs.yml
+  - local: '/debian/rdeps-ci.yml'
+
 
 # Disable failing reprotest. The purpose of a CI is to detect changes that
 # introduce regressions, and thus the starting point when activating a CI should
@@ -13,6 +15,8 @@ include:
 # something specific to the Salsa runners.
 variables:
   SALSA_CI_DISABLE_REPROTEST: 1
+  SALSA_CI_ENABLE_REVERSE_DEPENDENCY_BUILD: 1
+  SALSA_CI_DISABLE_APTLY: 0
 
 # If Salsa-CI is not running at
 # https://salsa.debian.org/%{project_path}/-/pipelines, ensure that
