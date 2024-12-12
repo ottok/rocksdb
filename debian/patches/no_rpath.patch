@@ -12,10 +12,10 @@ These will be installed semi-manual to usr/bin and will use system libraries.
  2 files changed, 3 insertions(+)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 50cc40b..1f940b3 100644
+index 17dced3..0215170 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -1555,6 +1555,7 @@ if(WITH_TESTS)
+@@ -1566,6 +1566,7 @@ if(WITH_TESTS)
  endif()
  
  if(WITH_BENCHMARK_TOOLS)

@@ -9,29 +9,11 @@ we are compiling for P9.
 On ppc64*, gcc can produce binaries optimized for P8, P9 or P10 atm.
 But on Debian we want to be compatible with all and default to P8.
 ---
-$ gcc -Q --help=target|grep -i power
- -mpower10                   		[disabled]
- -mpower10-fusion            		[disabled]
- -mpower8-fusion             		[enabled]
- -mpower8-fusion-sign        		[disabled]
- -mpower8-vector             		[enabled]
- -mpower9-minmax             		[disabled]
- -mpower9-misc               		[disabled]
- -mpower9-vector             		[disabled]
- -mpowerpc                   		[ignored]
- -mpowerpc-gfxopt            		[enabled]
- -mpowerpc-gpopt             		[enabled]
- -mpowerpc64                 		[enabled]
- ---
-Altivec is a different story, as it is enabled by default on ppc64el but not
-on ppc64. So leaving it for now.
-Forwarded: no
----
  CMakeLists.txt | 11 -----------
  1 file changed, 11 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 5857e8d..308c273 100644
+index f4794d2..a3b1711 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -229,17 +229,6 @@ endif()
