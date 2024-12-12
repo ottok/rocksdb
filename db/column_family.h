@@ -16,6 +16,7 @@
 
 #include "cache/cache_reservation_manager.h"
 #include "db/memtable_list.h"
+#include "db/snapshot_checker.h"
 #include "db/table_cache.h"
 #include "db/table_properties_collector.h"
 #include "db/write_batch_internal.h"
@@ -329,6 +330,10 @@ class ColumnFamilyData {
   void SetDropped();
   bool IsDropped() const { return dropped_.load(std::memory_order_relaxed); }
 
+  void SetFlushSkipReschedule();
+
+  bool GetAndClearFlushSkipReschedule();
+
   // thread-safe
   int NumberLevels() const { return ioptions_.num_levels; }
 
@@ -381,9 +386,9 @@ class ColumnFamilyData {
   uint64_t GetTotalSstFilesSize() const;  // REQUIRE: DB mutex held
   uint64_t GetLiveSstFilesSize() const;   // REQUIRE: DB mutex held
   uint64_t GetTotalBlobFileSize() const;  // REQUIRE: DB mutex held
+  // REQUIRE: DB mutex held
   void SetMemtable(MemTable* new_mem) {
-    uint64_t memtable_id = last_memtable_id_.fetch_add(1) + 1;
-    new_mem->SetID(memtable_id);
+    new_mem->SetID(++last_memtable_id_);
     mem_ = new_mem;
   }
 
@@ -397,15 +402,18 @@ class ColumnFamilyData {
                          SequenceNumber earliest_seq);
 
   TableCache* table_cache() const { return table_cache_.get(); }
+  BlobFileCache* blob_file_cache() const { return blob_file_cache_.get(); }
   BlobSource* blob_source() const { return blob_source_.get(); }
 
   // See documentation in compaction_picker.h
   // REQUIRES: DB mutex held
   bool NeedsCompaction() const;
   // REQUIRES: DB mutex held
-  Compaction* PickCompaction(const MutableCFOptions& mutable_options,
-                             const MutableDBOptions& mutable_db_options,
-                             LogBuffer* log_buffer);
+  Compaction* PickCompaction(
+      const MutableCFOptions& mutable_options,
+      const MutableDBOptions& mutable_db_options,
+      const std::vector<SequenceNumber>& existing_snapshots,
+      const SnapshotChecker* snapshot_checker, LogBuffer* log_buffer);
 
   // Check if the passed range overlap with any running compactions.
   // REQUIRES: DB mutex held
@@ -507,8 +515,6 @@ class ColumnFamilyData {
     return initial_cf_options_;
   }
 
-  Env::WriteLifeTimeHint CalculateSSTWriteHint(int level);
-
   // created_dirs remembers directory created, so that we don't need to call
   // the same data creation operation again.
   Status AddDirectories(
@@ -568,6 +574,10 @@ class ColumnFamilyData {
   // of its files (if missing)
   void RecoverEpochNumbers();
 
+  int GetUnflushedMemTableCountForWriteStallCheck() const {
+    return (mem_->IsEmpty() ? 0 : 1) + imm_.NumNotFlushed();
+  }
+
  private:
   friend class ColumnFamilySet;
   ColumnFamilyData(uint32_t id, const std::string& name,
@@ -591,6 +601,15 @@ class ColumnFamilyData {
   std::atomic<int> refs_;  // outstanding references to ColumnFamilyData
   std::atomic<bool> initialized_;
   std::atomic<bool> dropped_;  // true if client dropped it
+
+  // When user-defined timestamps in memtable only feature is enabled, this
+  // flag indicates a successfully requested flush that should
+  // skip being rescheduled and haven't undergone the rescheduling check yet.
+  // This flag is cleared when a check skips rescheduling a FlushRequest.
+  // With this flag, automatic flushes in regular cases can continue to
+  // retain UDTs by getting rescheduled as usual while manual flushes and
+  // error recovery flushes will proceed without getting rescheduled.
+  std::atomic<bool> flush_skip_reschedule_;
 
   const InternalKeyComparator internal_comparator_;
   InternalTblPropCollFactories internal_tbl_prop_coll_factories_;
@@ -654,7 +673,7 @@ class ColumnFamilyData {
   bool allow_2pc_;
 
   // Memtable id to track flush.
-  std::atomic<uint64_t> last_memtable_id_;
+  uint64_t last_memtable_id_;
 
   // Directories corresponding to cf_paths.
   std::vector<std::shared_ptr<FSDirectory>> data_dirs_;

@@ -7,6 +7,7 @@
 
 #include <cinttypes>
 
+#include "db/attribute_group_iterator_impl.h"
 #include "db/column_family.h"
 #include "db/db_impl/db_impl.h"
 #include "logging/logging.h"
@@ -351,6 +352,24 @@ Status TransactionBaseImpl::GetForUpdate(const ReadOptions& read_options,
   return s;
 }
 
+Status TransactionBaseImpl::GetEntityForUpdate(
+    const ReadOptions& read_options, ColumnFamilyHandle* column_family,
+    const Slice& key, PinnableWideColumns* columns, bool exclusive,
+    bool do_validate) {
+  if (!do_validate && read_options.snapshot != nullptr) {
+    return Status::InvalidArgument(
+        "Snapshot must not be set if validation is disabled");
+  }
+
+  const Status s =
+      TryLock(column_family, key, true /* read_only */, exclusive, do_validate);
+  if (!s.ok()) {
+    return s;
+  }
+
+  return GetEntityImpl(read_options, column_family, key, columns);
+}
+
 std::vector<Status> TransactionBaseImpl::MultiGet(
     const ReadOptions& _read_options,
     const std::vector<ColumnFamilyHandle*>& column_family,
@@ -466,6 +485,64 @@ Iterator* TransactionBaseImpl::GetIterator(const ReadOptions& read_options,
 
   return write_batch_.NewIteratorWithBase(column_family, db_iter,
                                           &read_options);
+}
+
+template <typename IterType, typename ImplType, typename ErrorIteratorFuncType>
+std::unique_ptr<IterType> TransactionBaseImpl::NewMultiCfIterator(
+    const ReadOptions& read_options,
+    const std::vector<ColumnFamilyHandle*>& column_families,
+    ErrorIteratorFuncType error_iterator_func) {
+  if (column_families.empty()) {
+    return error_iterator_func(
+        Status::InvalidArgument("No Column Family was provided"));
+  }
+
+  const Comparator* const first_comparator =
+      column_families[0]->GetComparator();
+  assert(first_comparator);
+
+  for (size_t i = 1; i < column_families.size(); ++i) {
+    const Comparator* cf_comparator = column_families[i]->GetComparator();
+    assert(cf_comparator);
+
+    if (first_comparator != cf_comparator &&
+        first_comparator->GetId() != cf_comparator->GetId()) {
+      return error_iterator_func(Status::InvalidArgument(
+          "Different comparators are being used across CFs"));
+    }
+  }
+
+  std::vector<Iterator*> child_iterators;
+  const Status s =
+      db_->NewIterators(read_options, column_families, &child_iterators);
+  if (!s.ok()) {
+    return error_iterator_func(s);
+  }
+
+  assert(column_families.size() == child_iterators.size());
+
+  std::vector<std::pair<ColumnFamilyHandle*, std::unique_ptr<Iterator>>>
+      cfh_iter_pairs;
+  cfh_iter_pairs.reserve(column_families.size());
+  for (size_t i = 0; i < column_families.size(); ++i) {
+    cfh_iter_pairs.emplace_back(
+        column_families[i],
+        write_batch_.NewIteratorWithBase(column_families[i], child_iterators[i],
+                                         &read_options));
+  }
+
+  return std::make_unique<ImplType>(read_options,
+                                    column_families[0]->GetComparator(),
+                                    std::move(cfh_iter_pairs));
+}
+
+std::unique_ptr<AttributeGroupIterator>
+TransactionBaseImpl::GetAttributeGroupIterator(
+    const ReadOptions& read_options,
+    const std::vector<ColumnFamilyHandle*>& column_families) {
+  return NewMultiCfIterator<AttributeGroupIterator, AttributeGroupIteratorImpl>(
+      read_options, column_families,
+      [](const Status& s) { return NewAttributeGroupErrorIterator(s); });
 }
 
 Status TransactionBaseImpl::PutEntityImpl(ColumnFamilyHandle* column_family,
@@ -814,11 +891,13 @@ Status TransactionBaseImpl::RebuildFromWriteBatch(WriteBatch* src_batch) {
     }
 
     Status PutCF(uint32_t cf, const Slice& key, const Slice& val) override {
-      return txn_->Put(db_->GetColumnFamilyHandle(cf), key, val);
+      Slice user_key = GetUserKey(cf, key);
+      return txn_->Put(db_->GetColumnFamilyHandle(cf), user_key, val);
     }
 
     Status PutEntityCF(uint32_t cf, const Slice& key,
                        const Slice& entity) override {
+      Slice user_key = GetUserKey(cf, key);
       Slice entity_copy = entity;
       WideColumns columns;
       const Status s =
@@ -827,19 +906,22 @@ Status TransactionBaseImpl::RebuildFromWriteBatch(WriteBatch* src_batch) {
         return s;
       }
 
-      return txn_->PutEntity(db_->GetColumnFamilyHandle(cf), key, columns);
+      return txn_->PutEntity(db_->GetColumnFamilyHandle(cf), user_key, columns);
     }
 
     Status DeleteCF(uint32_t cf, const Slice& key) override {
-      return txn_->Delete(db_->GetColumnFamilyHandle(cf), key);
+      Slice user_key = GetUserKey(cf, key);
+      return txn_->Delete(db_->GetColumnFamilyHandle(cf), user_key);
     }
 
     Status SingleDeleteCF(uint32_t cf, const Slice& key) override {
-      return txn_->SingleDelete(db_->GetColumnFamilyHandle(cf), key);
+      Slice user_key = GetUserKey(cf, key);
+      return txn_->SingleDelete(db_->GetColumnFamilyHandle(cf), user_key);
     }
 
     Status MergeCF(uint32_t cf, const Slice& key, const Slice& val) override {
-      return txn_->Merge(db_->GetColumnFamilyHandle(cf), key, val);
+      Slice user_key = GetUserKey(cf, key);
+      return txn_->Merge(db_->GetColumnFamilyHandle(cf), user_key, val);
     }
 
     // this is used for reconstructing prepared transactions upon
@@ -861,6 +943,21 @@ Status TransactionBaseImpl::RebuildFromWriteBatch(WriteBatch* src_batch) {
 
     Status MarkRollback(const Slice&) override {
       return Status::InvalidArgument();
+    }
+    size_t GetTimestampSize(uint32_t cf_id) {
+      auto cfd = db_->versions_->GetColumnFamilySet()->GetColumnFamily(cf_id);
+      const Comparator* ucmp = cfd->user_comparator();
+      assert(ucmp);
+      return ucmp->timestamp_size();
+    }
+
+    Slice GetUserKey(uint32_t cf_id, const Slice& key) {
+      size_t ts_sz = GetTimestampSize(cf_id);
+      if (ts_sz == 0) {
+        return key;
+      }
+      assert(key.size() >= ts_sz);
+      return Slice(key.data(), key.size() - ts_sz);
     }
   };
 
