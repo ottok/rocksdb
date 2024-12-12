@@ -13,6 +13,7 @@
 
 #include "db/db_impl/db_impl.h"
 #include "port/port.h"
+#include "rocksdb/attribute_groups.h"
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
 #include "rocksdb/perf_context.h"
@@ -7025,9 +7026,10 @@ TEST_P(TransactionTest, PutEntitySuccess) {
     }
 
     {
-      PinnableSlice value;
-      ASSERT_OK(txn->GetForUpdate(ReadOptions(), foo, &value));
-      ASSERT_EQ(value, foo_columns[0].value());
+      PinnableWideColumns columns;
+      ASSERT_OK(txn->GetEntityForUpdate(
+          ReadOptions(), db->DefaultColumnFamily(), foo, &columns));
+      ASSERT_EQ(columns.columns(), foo_columns);
     }
 
     ASSERT_OK(txn->PutEntity(db->DefaultColumnFamily(), foo, foo_new_columns));
@@ -7042,9 +7044,10 @@ TEST_P(TransactionTest, PutEntitySuccess) {
     }
 
     {
-      PinnableSlice value;
-      ASSERT_OK(txn->GetForUpdate(ReadOptions(), foo, &value));
-      ASSERT_EQ(value, foo_new_columns[0].value());
+      PinnableWideColumns columns;
+      ASSERT_OK(txn->GetEntityForUpdate(
+          ReadOptions(), db->DefaultColumnFamily(), foo, &columns));
+      ASSERT_EQ(columns.columns(), foo_new_columns);
     }
 
     ASSERT_OK(txn->Commit());
@@ -7227,6 +7230,67 @@ TEST_P(TransactionTest, PutEntityWriteConflict) {
   }
 }
 
+TEST_P(TransactionTest, PutEntityReadConflict) {
+  const TxnDBWritePolicy write_policy = std::get<2>(GetParam());
+  if (write_policy != TxnDBWritePolicy::WRITE_COMMITTED) {
+    ROCKSDB_GTEST_BYPASS("Test only WriteCommitted for now");
+    return;
+  }
+
+  constexpr char foo[] = "foo";
+  const WideColumns foo_columns{
+      {kDefaultWideColumnName, "bar"}, {"col1", "val1"}, {"col2", "val2"}};
+
+  ASSERT_OK(db->PutEntity(WriteOptions(), db->DefaultColumnFamily(), foo,
+                          foo_columns));
+
+  std::unique_ptr<Transaction> txn(db->BeginTransaction(WriteOptions()));
+  ASSERT_NE(txn, nullptr);
+
+  txn->SetSnapshot();
+
+  ReadOptions snapshot_read_options;
+  snapshot_read_options.snapshot = txn->GetSnapshot();
+
+  {
+    PinnableWideColumns columns;
+    ASSERT_OK(txn->GetEntityForUpdate(
+        snapshot_read_options, db->DefaultColumnFamily(), foo, &columns));
+    ASSERT_EQ(columns.columns(), foo_columns);
+  }
+
+  // This PutEntity outside of a transaction will conflict with the previous
+  // write
+  const WideColumns foo_conflict_columns{{kDefaultWideColumnName, "X"},
+                                         {"conflicting", "write"}};
+  ASSERT_TRUE(db->PutEntity(WriteOptions(), db->DefaultColumnFamily(), foo,
+                            foo_conflict_columns)
+                  .IsTimedOut());
+
+  {
+    PinnableWideColumns columns;
+    ASSERT_OK(
+        db->GetEntity(ReadOptions(), db->DefaultColumnFamily(), foo, &columns));
+    ASSERT_EQ(columns.columns(), foo_columns);
+  }
+
+  {
+    PinnableWideColumns columns;
+    ASSERT_OK(txn->GetEntity(ReadOptions(), db->DefaultColumnFamily(), foo,
+                             &columns));
+    ASSERT_EQ(columns.columns(), foo_columns);
+  }
+
+  ASSERT_OK(txn->Commit());
+
+  {
+    PinnableWideColumns columns;
+    ASSERT_OK(
+        db->GetEntity(ReadOptions(), db->DefaultColumnFamily(), foo, &columns));
+    ASSERT_EQ(columns.columns(), foo_columns);
+  }
+}
+
 TEST_P(TransactionTest, EntityReadSanityChecks) {
   constexpr char foo[] = "foo";
   constexpr char bar[] = "bar";
@@ -7313,6 +7377,358 @@ TEST_P(TransactionTest, EntityReadSanityChecks) {
                         sorted_input);
     ASSERT_TRUE(statuses[0].IsInvalidArgument());
     ASSERT_TRUE(statuses[1].IsInvalidArgument());
+  }
+
+  {
+    constexpr ColumnFamilyHandle* column_family = nullptr;
+    PinnableWideColumns columns;
+    ASSERT_TRUE(
+        txn->GetEntityForUpdate(ReadOptions(), column_family, foo, &columns)
+            .IsInvalidArgument());
+  }
+
+  {
+    constexpr PinnableWideColumns* columns = nullptr;
+    ASSERT_TRUE(txn->GetEntityForUpdate(ReadOptions(),
+                                        db->DefaultColumnFamily(), foo, columns)
+                    .IsInvalidArgument());
+  }
+
+  {
+    ReadOptions read_options;
+    read_options.io_activity = Env::IOActivity::kGet;
+
+    PinnableWideColumns columns;
+    ASSERT_TRUE(txn->GetEntityForUpdate(read_options, db->DefaultColumnFamily(),
+                                        foo, &columns)
+                    .IsInvalidArgument());
+  }
+
+  {
+    txn->SetSnapshot();
+
+    ReadOptions read_options;
+    read_options.snapshot = txn->GetSnapshot();
+
+    PinnableWideColumns columns;
+    constexpr bool exclusive = true;
+    constexpr bool do_validate = false;
+
+    ASSERT_TRUE(txn->GetEntityForUpdate(read_options, db->DefaultColumnFamily(),
+                                        foo, &columns, exclusive, do_validate)
+                    .IsInvalidArgument());
+  }
+}
+
+TEST_P(TransactionTest, PutEntityRecovery) {
+  const TxnDBWritePolicy write_policy = std::get<2>(GetParam());
+  if (write_policy != TxnDBWritePolicy::WRITE_COMMITTED) {
+    ROCKSDB_GTEST_BYPASS("Test only WriteCommitted for now");
+    return;
+  }
+
+  constexpr char foo[] = "foo";
+  const WideColumns foo_columns{
+      {kDefaultWideColumnName, "bar"}, {"col1", "val1"}, {"col2", "val2"}};
+
+  constexpr char xid[] = "xid";
+
+  {
+    WriteOptions write_options;
+    write_options.sync = true;
+    write_options.disableWAL = false;
+
+    std::unique_ptr<Transaction> txn(db->BeginTransaction(write_options));
+    ASSERT_NE(txn, nullptr);
+
+    ASSERT_OK(txn->SetName(xid));
+
+    ASSERT_OK(txn->PutEntity(db->DefaultColumnFamily(), foo, foo_columns));
+
+    ASSERT_OK(txn->Prepare());
+  }
+
+  ASSERT_OK(ReOpenNoDelete());
+
+  {
+    std::unique_ptr<Transaction> txn(db->GetTransactionByName(xid));
+    ASSERT_NE(txn, nullptr);
+
+    ASSERT_OK(txn->Commit());
+  }
+
+  {
+    PinnableWideColumns columns;
+    ASSERT_OK(
+        db->GetEntity(ReadOptions(), db->DefaultColumnFamily(), foo, &columns));
+    ASSERT_EQ(columns.columns(), foo_columns);
+  }
+}
+
+TEST_P(TransactionTest, AttributeGroupIterator) {
+  const TxnDBWritePolicy write_policy = std::get<2>(GetParam());
+  if (write_policy != TxnDBWritePolicy::WRITE_COMMITTED) {
+    ROCKSDB_GTEST_BYPASS("Test only WriteCommitted for now");
+    return;
+  }
+
+  ColumnFamilyOptions cf_opts;
+  cf_opts.enable_blob_files = true;
+
+  ColumnFamilyHandle* cfh1 = nullptr;
+  ASSERT_OK(db->CreateColumnFamily(cf_opts, "cf1", &cfh1));
+  std::unique_ptr<ColumnFamilyHandle> cfh1_guard(cfh1);
+
+  ColumnFamilyHandle* cfh2 = nullptr;
+  ASSERT_OK(db->CreateColumnFamily(cf_opts, "cf2", &cfh2));
+  std::unique_ptr<ColumnFamilyHandle> cfh2_guard(cfh2);
+
+  // Note: "cf1" keys are present only in CF1; "cf2" keys are only present in
+  // CF2; "cf12" keys are present in both CFs. "a" keys are present only in the
+  // database; "b" keys are present only in the transaction; "c" keys are
+  // present in both the database and the transaction. The values indicate the
+  // column family as well as whether the entry came from the database or the
+  // transaction.
+
+  ASSERT_OK(db->Put(WriteOptions(), cfh1, "cf1_a", "cf1_a_db_cf1"));
+  ASSERT_OK(db->Put(WriteOptions(), cfh1, "cf1_c", "cf1_c_db_cf1"));
+
+  ASSERT_OK(db->Put(WriteOptions(), cfh2, "cf2_a", "cf2_a_db_cf2"));
+  ASSERT_OK(db->Put(WriteOptions(), cfh2, "cf2_c", "cf2_c_db_cf2"));
+
+  ASSERT_OK(db->Put(WriteOptions(), cfh1, "cf12_a", "cf12_a_db_cf1"));
+  ASSERT_OK(db->Put(WriteOptions(), cfh2, "cf12_a", "cf12_a_db_cf2"));
+  ASSERT_OK(db->Put(WriteOptions(), cfh1, "cf12_c", "cf12_c_db_cf1"));
+  ASSERT_OK(db->Put(WriteOptions(), cfh2, "cf12_c", "cf12_c_db_cf2"));
+
+  ASSERT_OK(db->Flush(FlushOptions(), cfh1));
+  ASSERT_OK(db->Flush(FlushOptions(), cfh2));
+
+  std::unique_ptr<Transaction> txn(db->BeginTransaction(WriteOptions()));
+
+  ASSERT_OK(txn->Put(cfh1, "cf1_b", "cf1_b_txn_cf1"));
+  ASSERT_OK(txn->Put(cfh1, "cf1_c", "cf1_c_txn_cf1"));
+
+  ASSERT_OK(txn->Put(cfh2, "cf2_b", "cf2_b_txn_cf2"));
+  ASSERT_OK(txn->Put(cfh2, "cf2_c", "cf2_c_txn_cf2"));
+
+  ASSERT_OK(txn->Put(cfh1, "cf12_b", "cf12_b_txn_cf1"));
+  ASSERT_OK(txn->Put(cfh2, "cf12_b", "cf12_b_txn_cf2"));
+  ASSERT_OK(txn->Put(cfh1, "cf12_c", "cf12_c_txn_cf1"));
+  ASSERT_OK(txn->Put(cfh2, "cf12_c", "cf12_c_txn_cf2"));
+
+  auto verify = [&](bool allow_unprepared_value, auto prepare_if_needed) {
+    ReadOptions read_options;
+    read_options.allow_unprepared_value = allow_unprepared_value;
+
+    std::unique_ptr<AttributeGroupIterator> iter(
+        txn->GetAttributeGroupIterator(read_options, {cfh1, cfh2}));
+
+    {
+      iter->SeekToFirst();
+      ASSERT_TRUE(iter->Valid());
+      ASSERT_OK(iter->status());
+      ASSERT_EQ(iter->key(), "cf12_a");
+
+      prepare_if_needed(iter.get());
+
+      WideColumns cf1_columns{{kDefaultWideColumnName, "cf12_a_db_cf1"}};
+      WideColumns cf2_columns{{kDefaultWideColumnName, "cf12_a_db_cf2"}};
+      IteratorAttributeGroups expected{
+          IteratorAttributeGroup{cfh1, &cf1_columns},
+          IteratorAttributeGroup{cfh2, &cf2_columns}};
+      ASSERT_EQ(iter->attribute_groups(), expected);
+    }
+
+    {
+      iter->Next();
+      ASSERT_TRUE(iter->Valid());
+      ASSERT_OK(iter->status());
+      ASSERT_EQ(iter->key(), "cf12_b");
+
+      prepare_if_needed(iter.get());
+
+      WideColumns cf1_columns{{kDefaultWideColumnName, "cf12_b_txn_cf1"}};
+      WideColumns cf2_columns{{kDefaultWideColumnName, "cf12_b_txn_cf2"}};
+      IteratorAttributeGroups expected{
+          IteratorAttributeGroup{cfh1, &cf1_columns},
+          IteratorAttributeGroup{cfh2, &cf2_columns}};
+      ASSERT_EQ(iter->attribute_groups(), expected);
+    }
+
+    {
+      iter->Next();
+      ASSERT_TRUE(iter->Valid());
+      ASSERT_OK(iter->status());
+      ASSERT_EQ(iter->key(), "cf12_c");
+
+      prepare_if_needed(iter.get());
+
+      WideColumns cf1_columns{{kDefaultWideColumnName, "cf12_c_txn_cf1"}};
+      WideColumns cf2_columns{{kDefaultWideColumnName, "cf12_c_txn_cf2"}};
+      IteratorAttributeGroups expected{
+          IteratorAttributeGroup{cfh1, &cf1_columns},
+          IteratorAttributeGroup{cfh2, &cf2_columns}};
+      ASSERT_EQ(iter->attribute_groups(), expected);
+    }
+
+    {
+      iter->Next();
+      ASSERT_TRUE(iter->Valid());
+      ASSERT_OK(iter->status());
+      ASSERT_EQ(iter->key(), "cf1_a");
+
+      prepare_if_needed(iter.get());
+
+      WideColumns cf1_columns{{kDefaultWideColumnName, "cf1_a_db_cf1"}};
+      IteratorAttributeGroups expected{
+          IteratorAttributeGroup{cfh1, &cf1_columns}};
+      ASSERT_EQ(iter->attribute_groups(), expected);
+    }
+
+    {
+      iter->Next();
+      ASSERT_TRUE(iter->Valid());
+      ASSERT_OK(iter->status());
+      ASSERT_EQ(iter->key(), "cf1_b");
+
+      prepare_if_needed(iter.get());
+
+      WideColumns cf1_columns{{kDefaultWideColumnName, "cf1_b_txn_cf1"}};
+      IteratorAttributeGroups expected{
+          IteratorAttributeGroup{cfh1, &cf1_columns}};
+      ASSERT_EQ(iter->attribute_groups(), expected);
+    }
+
+    {
+      iter->Next();
+      ASSERT_TRUE(iter->Valid());
+      ASSERT_OK(iter->status());
+      ASSERT_EQ(iter->key(), "cf1_c");
+
+      prepare_if_needed(iter.get());
+
+      WideColumns cf1_columns{{kDefaultWideColumnName, "cf1_c_txn_cf1"}};
+      IteratorAttributeGroups expected{
+          IteratorAttributeGroup{cfh1, &cf1_columns}};
+      ASSERT_EQ(iter->attribute_groups(), expected);
+    }
+
+    {
+      iter->Next();
+      ASSERT_TRUE(iter->Valid());
+      ASSERT_OK(iter->status());
+      ASSERT_EQ(iter->key(), "cf2_a");
+
+      prepare_if_needed(iter.get());
+
+      WideColumns cf2_columns{{kDefaultWideColumnName, "cf2_a_db_cf2"}};
+      IteratorAttributeGroups expected{
+          IteratorAttributeGroup{cfh2, &cf2_columns}};
+      ASSERT_EQ(iter->attribute_groups(), expected);
+    }
+
+    {
+      iter->Next();
+      ASSERT_TRUE(iter->Valid());
+      ASSERT_OK(iter->status());
+      ASSERT_EQ(iter->key(), "cf2_b");
+
+      prepare_if_needed(iter.get());
+
+      WideColumns cf2_columns{{kDefaultWideColumnName, "cf2_b_txn_cf2"}};
+      IteratorAttributeGroups expected{
+          IteratorAttributeGroup{cfh2, &cf2_columns}};
+      ASSERT_EQ(iter->attribute_groups(), expected);
+    }
+
+    {
+      iter->Next();
+      ASSERT_TRUE(iter->Valid());
+      ASSERT_OK(iter->status());
+      ASSERT_EQ(iter->key(), "cf2_c");
+
+      prepare_if_needed(iter.get());
+
+      WideColumns cf2_columns{{kDefaultWideColumnName, "cf2_c_txn_cf2"}};
+      IteratorAttributeGroups expected{
+          IteratorAttributeGroup{cfh2, &cf2_columns}};
+      ASSERT_EQ(iter->attribute_groups(), expected);
+    }
+
+    {
+      iter->Next();
+      ASSERT_FALSE(iter->Valid());
+      ASSERT_OK(iter->status());
+    }
+  };
+
+  verify(/* allow_unprepared_value */ false, [](AttributeGroupIterator*) {});
+  verify(/* allow_unprepared_value */ true, [](AttributeGroupIterator* iter) {
+    ASSERT_TRUE(iter->attribute_groups().empty());
+    ASSERT_TRUE(iter->PrepareValue());
+  });
+}
+
+TEST_P(TransactionTest, AttributeGroupIteratorSanityChecks) {
+  ColumnFamilyOptions cf1_opts;
+  ColumnFamilyHandle* cfh1 = nullptr;
+  ASSERT_OK(db->CreateColumnFamily(cf1_opts, "cf1", &cfh1));
+  std::unique_ptr<ColumnFamilyHandle> cfh1_guard(cfh1);
+
+  ColumnFamilyOptions cf2_opts;
+  cf2_opts.comparator = ReverseBytewiseComparator();
+  ColumnFamilyHandle* cfh2 = nullptr;
+  ASSERT_OK(db->CreateColumnFamily(cf2_opts, "cf2", &cfh2));
+  std::unique_ptr<ColumnFamilyHandle> cfh2_guard(cfh2);
+
+  std::unique_ptr<Transaction> txn(db->BeginTransaction(WriteOptions()));
+
+  const TxnDBWritePolicy write_policy = std::get<2>(GetParam());
+  if (write_policy != TxnDBWritePolicy::WRITE_COMMITTED) {
+    {
+      std::unique_ptr<AttributeGroupIterator> iter(
+          txn->GetAttributeGroupIterator(ReadOptions(), {}));
+      ASSERT_TRUE(iter->status().IsNotSupported());
+    }
+
+    {
+      std::unique_ptr<AttributeGroupIterator> iter(
+          txn->GetAttributeGroupIterator(ReadOptions(), {cfh1, cfh2}));
+      ASSERT_TRUE(iter->status().IsNotSupported());
+    }
+
+    {
+      ReadOptions read_options;
+      read_options.io_activity = Env::IOActivity::kCompaction;
+
+      std::unique_ptr<AttributeGroupIterator> iter(
+          txn->GetAttributeGroupIterator(read_options, {cfh1}));
+      ASSERT_TRUE(iter->status().IsNotSupported());
+    }
+
+    return;
+  }
+
+  {
+    std::unique_ptr<AttributeGroupIterator> iter(
+        txn->GetAttributeGroupIterator(ReadOptions(), {}));
+    ASSERT_TRUE(iter->status().IsInvalidArgument());
+  }
+
+  {
+    std::unique_ptr<AttributeGroupIterator> iter(
+        txn->GetAttributeGroupIterator(ReadOptions(), {cfh1, cfh2}));
+    ASSERT_TRUE(iter->status().IsInvalidArgument());
+  }
+
+  {
+    ReadOptions read_options;
+    read_options.io_activity = Env::IOActivity::kCompaction;
+
+    std::unique_ptr<AttributeGroupIterator> iter(
+        txn->GetAttributeGroupIterator(read_options, {cfh1}));
+    ASSERT_TRUE(iter->status().IsInvalidArgument());
   }
 }
 

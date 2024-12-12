@@ -203,6 +203,7 @@ class CompactionIterator {
   CompactionIterator(
       InternalIterator* input, const Comparator* cmp, MergeHelper* merge_helper,
       SequenceNumber last_sequence, std::vector<SequenceNumber>* snapshots,
+      SequenceNumber earliest_snapshot,
       SequenceNumber earliest_write_conflict_snapshot,
       SequenceNumber job_snapshot, const SnapshotChecker* snapshot_checker,
       Env* env, bool report_detailed_time, bool expect_valid_internal_key,
@@ -222,6 +223,7 @@ class CompactionIterator {
   CompactionIterator(
       InternalIterator* input, const Comparator* cmp, MergeHelper* merge_helper,
       SequenceNumber last_sequence, std::vector<SequenceNumber>* snapshots,
+      SequenceNumber earliest_snapshot,
       SequenceNumber earliest_write_conflict_snapshot,
       SequenceNumber job_snapshot, const SnapshotChecker* snapshot_checker,
       Env* env, bool report_detailed_time, bool expect_valid_internal_key,
@@ -538,18 +540,12 @@ class CompactionIterator {
 
 inline bool CompactionIterator::DefinitelyInSnapshot(SequenceNumber seq,
                                                      SequenceNumber snapshot) {
-  return ((seq) <= (snapshot) &&
-          (snapshot_checker_ == nullptr ||
-           LIKELY(snapshot_checker_->CheckInSnapshot((seq), (snapshot)) ==
-                  SnapshotCheckerResult::kInSnapshot)));
+  return DataIsDefinitelyInSnapshot(seq, snapshot, snapshot_checker_);
 }
 
 inline bool CompactionIterator::DefinitelyNotInSnapshot(
     SequenceNumber seq, SequenceNumber snapshot) {
-  return ((seq) > (snapshot) ||
-          (snapshot_checker_ != nullptr &&
-           UNLIKELY(snapshot_checker_->CheckInSnapshot((seq), (snapshot)) ==
-                    SnapshotCheckerResult::kNotInSnapshot)));
+  return DataIsDefinitelyNotInSnapshot(seq, snapshot, snapshot_checker_);
 }
 
 }  // namespace ROCKSDB_NAMESPACE
