@@ -19,6 +19,12 @@ ifeq ($(DEB_HOST_ARCH),mipsel)
 	export DEB_LDFLAGS_MAINT_APPEND= -latomic
 endif
 
+# Link with libatomic on archs where it is needed.
+# See <URL: https://bugs.debian.org/1019868 >
+ifeq ($(DEB_HOST_ARCH),$(filter $(DEB_HOST_ARCH),armel riscv64))
+       export DEB_LDFLAGS_MAINT_APPEND += -Wl,--no-as-needed -latomic -Wl,--as-needed
+endif
+
 # make build verbose
 export AM_DEFAULT_VERBOSITY=1
 
