@@ -1,10 +1,15 @@
-rocksdb (9.10.0-1) UNRELEASED; urgency=medium
+rocksdb (9.10.0-1) unstable; urgency=medium
 
   * New upstream release 9.10.0, see details at
     - https://github.com/facebook/rocksdb/releases/tag/v9.10.0
     - https://github.com/facebook/rocksdb/releases/tag/v9.9.3
+  * Main change between 9.8.4 and 9.10.0 seemingly is changes to how they do
+    auto-triggered compaction of databases, including follow-up to a memory leak
+    (https://github.com/facebook/rocksdb/pull/13106) which most likely fixes
+    issue seen in Oxigraph (Closes: #1088523).
+  * Bump library name to librocksdb9.10 so it matches latest RocksDB version.
 
- -- Otto Kekäläinen <otto@debian.org>  Fri, 24 Jan 2025 17:33:10 -0800
+ -- Otto Kekäläinen <otto@debian.org>  Fri, 24 Jan 2025 21:24:20 -0800
 
 rocksdb (9.8.4-1) unstable; urgency=medium
 
