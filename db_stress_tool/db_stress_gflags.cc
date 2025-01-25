@@ -546,6 +546,10 @@ DEFINE_uint32(use_timed_put_one_in, 0,
               "If greater than zero, TimedPut is used per every N write ops on "
               "on average.");
 
+DEFINE_string(file_temperature_age_thresholds, "",
+              "See CompactionOptionsFIFO::file_temperature_age_thresholds. "
+              "empty == unset");
+
 static const bool FLAGS_subcompactions_dummy __attribute__((__unused__)) =
     RegisterFlagValidator(&FLAGS_subcompactions, &ValidateUint32Range);
 
@@ -834,6 +838,14 @@ DEFINE_bool(use_get_entity, false, "If set, use the GetEntity API for reads");
 
 DEFINE_bool(use_multi_get_entity, false,
             "If set, use the MultiGetEntity API for reads");
+
+DEFINE_int32(test_ingest_standalone_range_deletion_one_in, 0,
+             "If non-zero, file ingestion flow will test standalone range "
+             "deletion file once every N file ingestion operations.");
+
+DEFINE_bool(allow_unprepared_value,
+            ROCKSDB_NAMESPACE::ReadOptions().allow_unprepared_value,
+            "Allow lazy loading of values for range scans");
 
 static bool ValidateInt32Percent(const char* flagname, int32_t value) {
   if (value < 0 || value > 100) {
@@ -1457,4 +1469,7 @@ DEFINE_bool(paranoid_memory_checks,
             ROCKSDB_NAMESPACE::Options().paranoid_memory_checks,
             "Sets CF option paranoid_memory_checks.");
 
+DEFINE_uint32(commit_bypass_memtable_one_in, 0,
+              "If greater than zero, transaction option will set "
+              "commit_bypass_memtable to per every N transactions on average.");
 #endif  // GFLAGS

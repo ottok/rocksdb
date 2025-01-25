@@ -15,6 +15,7 @@
 #include "db/db_impl/db_impl.h"
 #include "db/db_test_util.h"
 #include "db/log_writer.h"
+#include "db/manifest_ops.h"
 #include "db/version_edit.h"
 #include "rocksdb/advanced_options.h"
 #include "rocksdb/convenience.h"
@@ -1328,7 +1329,7 @@ class VersionSetTestBase {
               &internal_tbl_prop_coll_factories, kNoCompression,
               CompressionOptions(),
               TablePropertiesCollectorFactory::Context::kUnknownColumnFamily,
-              info.column_family, info.level),
+              info.column_family, info.level, kUnknownNewestKeyTime),
           fwriter.get()));
       InternalKey ikey(info.key, 0, ValueType::kTypeValue);
       builder->Add(ikey.Encode(), "value");
@@ -1390,18 +1391,16 @@ class VersionSetTestBase {
   void GetManifestPath(std::string* manifest_path) const {
     assert(manifest_path != nullptr);
     uint64_t manifest_file_number = 0;
-    Status s = versions_->GetCurrentManifestPath(
-        dbname_, fs_.get(), /*is_retry=*/false, manifest_path,
-        &manifest_file_number);
+    Status s = GetCurrentManifestPath(dbname_, fs_.get(), /*is_retry=*/false,
+                                      manifest_path, &manifest_file_number);
     ASSERT_OK(s);
   }
 
   void VerifyManifest(std::string* manifest_path) const {
     assert(manifest_path != nullptr);
     uint64_t manifest_file_number = 0;
-    Status s = versions_->GetCurrentManifestPath(
-        dbname_, fs_.get(), /*is_retry=*/false, manifest_path,
-        &manifest_file_number);
+    Status s = GetCurrentManifestPath(dbname_, fs_.get(), /*is_retry=*/false,
+                                      manifest_path, &manifest_file_number);
     ASSERT_OK(s);
     ASSERT_EQ(1, manifest_file_number);
   }

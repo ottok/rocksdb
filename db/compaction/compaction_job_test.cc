@@ -301,13 +301,13 @@ class CompactionJobTestBase : public testing::Test {
     const WriteOptions write_options;
     std::unique_ptr<TableBuilder> table_builder(
         cf_options_.table_factory->NewTableBuilder(
-            TableBuilderOptions(*cfd_->ioptions(), mutable_cf_options_,
-                                read_options, write_options,
-                                cfd_->internal_comparator(),
-                                cfd_->internal_tbl_prop_coll_factories(),
-                                CompressionType::kNoCompression,
-                                CompressionOptions(), 0 /* column_family_id */,
-                                kDefaultColumnFamilyName, -1 /* level */),
+            TableBuilderOptions(
+                *cfd_->ioptions(), mutable_cf_options_, read_options,
+                write_options, cfd_->internal_comparator(),
+                cfd_->internal_tbl_prop_coll_factories(),
+                CompressionType::kNoCompression, CompressionOptions(),
+                0 /* column_family_id */, kDefaultColumnFamilyName,
+                -1 /* level */, kUnknownNewestKeyTime),
             file_writer.get()));
     // Build table.
     for (const auto& kv : contents) {
@@ -1672,9 +1672,6 @@ TEST_F(CompactionJobTest, ResultSerialization) {
     tp.readable_properties.emplace("RP_K2y2",
                                    rnd.RandomString(rnd.Uniform(kStrMaxLen)));
 
-    std::shared_ptr<const TableProperties> table_properties =
-        std::make_shared<const TableProperties>(tp);
-
     UniqueId64x2 id{rnd64.Uniform(UINT64_MAX), rnd64.Uniform(UINT64_MAX)};
     result.output_files.emplace_back(
         rnd.RandomString(rnd.Uniform(kStrMaxLen)) /* file_name */,
@@ -1690,8 +1687,7 @@ TEST_F(CompactionJobTest, ResultSerialization) {
         file_checksum /* file_checksum */,
         file_checksum_func_name /* file_checksum_func_name */,
         rnd64.Uniform(UINT64_MAX) /* paranoid_hash */,
-        rnd.OneIn(2) /* marked_for_compaction */, id /* unique_id */,
-        table_properties);
+        rnd.OneIn(2) /* marked_for_compaction */, id /* unique_id */, tp);
   }
   result.output_level = rnd.Uniform(10);
   result.output_path = rnd.RandomString(rnd.Uniform(kStrMaxLen));

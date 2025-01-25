@@ -207,7 +207,7 @@ struct SuperVersion {
   // Accessing members of this class is not thread-safe and requires external
   // synchronization (ie db mutex held or on write thread).
   ColumnFamilyData* cfd;
-  MemTable* mem;
+  ReadOnlyMemTable* mem;
   MemTableListVersion* imm;
   Version* current;
   MutableCFOptions mutable_cf_options;
@@ -269,7 +269,7 @@ struct SuperVersion {
   // We need to_delete because during Cleanup(), imm->Unref() returns
   // all memtables that we need to free through this vector. We then
   // delete all those memtables outside of mutex, during destruction
-  autovector<MemTable*> to_delete;
+  autovector<ReadOnlyMemTable*> to_delete;
 };
 
 Status CheckCompressionSupported(const ColumnFamilyOptions& cf_options);
@@ -388,8 +388,12 @@ class ColumnFamilyData {
   uint64_t GetTotalBlobFileSize() const;  // REQUIRE: DB mutex held
   // REQUIRE: DB mutex held
   void SetMemtable(MemTable* new_mem) {
-    new_mem->SetID(++last_memtable_id_);
+    AssignMemtableID(new_mem);
     mem_ = new_mem;
+  }
+
+  void AssignMemtableID(ReadOnlyMemTable* new_imm) {
+    new_imm->SetID(++last_memtable_id_);
   }
 
   // calculate the oldest log needed for the durability of this column family

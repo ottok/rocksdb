@@ -258,6 +258,10 @@ void UpdateColumnFamilyOptions(const MutableCFOptions& moptions,
       moptions.max_bytes_for_level_multiplier;
   cf_opts->ttl = moptions.ttl;
   cf_opts->periodic_compaction_seconds = moptions.periodic_compaction_seconds;
+  cf_opts->preclude_last_level_data_seconds =
+      moptions.preclude_last_level_data_seconds;
+  cf_opts->preserve_internal_time_seconds =
+      moptions.preserve_internal_time_seconds;
 
   cf_opts->max_bytes_for_level_multiplier_additional.clear();
   for (auto value : moptions.max_bytes_for_level_multiplier_additional) {
@@ -331,10 +335,6 @@ void UpdateColumnFamilyOptions(const ImmutableCFOptions& ioptions,
   cf_opts->compaction_thread_limiter = ioptions.compaction_thread_limiter;
   cf_opts->sst_partitioner_factory = ioptions.sst_partitioner_factory;
   cf_opts->blob_cache = ioptions.blob_cache;
-  cf_opts->preclude_last_level_data_seconds =
-      ioptions.preclude_last_level_data_seconds;
-  cf_opts->preserve_internal_time_seconds =
-      ioptions.preserve_internal_time_seconds;
   cf_opts->persist_user_defined_timestamps =
       ioptions.persist_user_defined_timestamps;
   cf_opts->default_temperature = ioptions.default_temperature;
@@ -995,7 +995,8 @@ Status OptionTypeInfo::ParseStruct(
     std::unordered_map<std::string, std::string> unused;
     status =
         ParseType(config_options, opt_value, *struct_map, opt_addr, &unused);
-    if (status.ok() && !unused.empty()) {
+    if (status.ok() && !unused.empty() &&
+        !config_options.ignore_unknown_options) {
       status = Status::InvalidArgument(
           "Unrecognized option", struct_name + "." + unused.begin()->first);
     }
@@ -1006,7 +1007,7 @@ Status OptionTypeInfo::ParseStruct(
         Find(opt_name.substr(struct_name.size() + 1), *struct_map, &elem_name);
     if (opt_info != nullptr) {
       status = opt_info->Parse(config_options, elem_name, opt_value, opt_addr);
-    } else {
+    } else if (!config_options.ignore_unknown_options) {
       status = Status::InvalidArgument("Unrecognized option", opt_name);
     }
   } else {
@@ -1015,7 +1016,7 @@ Status OptionTypeInfo::ParseStruct(
     const auto opt_info = Find(opt_name, *struct_map, &elem_name);
     if (opt_info != nullptr) {
       status = opt_info->Parse(config_options, elem_name, opt_value, opt_addr);
-    } else {
+    } else if (!config_options.ignore_unknown_options) {
       status = Status::InvalidArgument("Unrecognized option",
                                        struct_name + "." + opt_name);
     }

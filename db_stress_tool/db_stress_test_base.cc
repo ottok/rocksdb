@@ -413,6 +413,16 @@ bool StressTest::BuildOptionsTable() {
                                                  "2147483646", "2147483647"});
   }
 
+  if (!FLAGS_file_temperature_age_thresholds.empty()) {
+    // Modify file_temperature_age_thresholds only if it is set initially
+    // (FIFO tiered storage setup)
+    options_tbl.emplace(
+        "file_temperature_age_thresholds",
+        std::vector<std::string>{
+            "{{temperature=kWarm;age=30}:{temperature=kCold;age=300}}",
+            "{{temperature=kCold;age=100}}", "{}"});
+  }
+
   options_table_ = std::move(options_tbl);
 
   for (const auto& iter : options_table_) {
@@ -795,8 +805,9 @@ void StressTest::ProcessRecoveredPreparedTxnsHelper(Transaction* txn,
   }
 }
 
-Status StressTest::NewTxn(WriteOptions& write_opts,
-                          std::unique_ptr<Transaction>* out_txn) {
+Status StressTest::NewTxn(WriteOptions& write_opts, ThreadState* thread,
+                          std::unique_ptr<Transaction>* out_txn,
+                          bool* commit_bypass_memtable) {
   if (!FLAGS_use_txn) {
     return Status::InvalidArgument("NewTxn when FLAGS_use_txn is not set");
   }
@@ -811,6 +822,15 @@ Status StressTest::NewTxn(WriteOptions& write_opts,
         FLAGS_use_only_the_last_commit_time_batch_for_recovery;
     txn_options.lock_timeout = 600000;  // 10 min
     txn_options.deadlock_detect = true;
+    if (FLAGS_commit_bypass_memtable_one_in > 0) {
+      assert(FLAGS_txn_write_policy == 0);
+      assert(FLAGS_user_timestamp_size == 0);
+      txn_options.commit_bypass_memtable =
+          thread->rand.OneIn(FLAGS_commit_bypass_memtable_one_in);
+      if (commit_bypass_memtable) {
+        *commit_bypass_memtable = txn_options.commit_bypass_memtable;
+      }
+    }
     out_txn->reset(txn_db_->BeginTransaction(write_opts, txn_options));
     auto istr = std::to_string(txn_id.fetch_add(1));
     Status s = (*out_txn)->SetName("xid" + istr);
@@ -866,11 +886,12 @@ Status StressTest::CommitTxn(Transaction& txn, ThreadState* thread) {
   return s;
 }
 
-Status StressTest::ExecuteTransaction(
-    WriteOptions& write_opts, ThreadState* thread,
-    std::function<Status(Transaction&)>&& ops) {
+Status StressTest::ExecuteTransaction(WriteOptions& write_opts,
+                                      ThreadState* thread,
+                                      std::function<Status(Transaction&)>&& ops,
+                                      bool* commit_bypass_memtable) {
   std::unique_ptr<Transaction> txn;
-  Status s = NewTxn(write_opts, &txn);
+  Status s = NewTxn(write_opts, thread, &txn, commit_bypass_memtable);
   std::string try_again_messages;
   if (s.ok()) {
     for (int tries = 1;; ++tries) {
@@ -918,6 +939,8 @@ void StressTest::OperateDb(ThreadState* thread) {
   read_opts.auto_readahead_size = FLAGS_auto_readahead_size;
   read_opts.fill_cache = FLAGS_fill_cache;
   read_opts.optimize_multiget_for_io = FLAGS_optimize_multiget_for_io;
+  read_opts.allow_unprepared_value = FLAGS_allow_unprepared_value;
+
   WriteOptions write_opts;
   if (FLAGS_rate_limit_auto_wal_flush) {
     write_opts.rate_limiter_priority = Env::IO_USER;
@@ -1746,6 +1769,15 @@ Status StressTest::TestIterateImpl(ThreadState* thread,
       op_logs += "S " + key.ToString(true) + " ";
     }
 
+    if (iter->Valid() && ro.allow_unprepared_value) {
+      op_logs += "*";
+
+      if (!iter->PrepareValue()) {
+        assert(!iter->Valid());
+        assert(!iter->status().ok());
+      }
+    }
+
     if (!iter->status().ok() && IsErrorInjectedAndRetryable(iter->status())) {
       return iter->status();
     } else if (!cmp_iter->status().ok() &&
@@ -1776,6 +1808,15 @@ Status StressTest::TestIterateImpl(ThreadState* thread,
       }
 
       last_op = kLastOpNextOrPrev;
+
+      if (iter->Valid() && ro.allow_unprepared_value) {
+        op_logs += "*";
+
+        if (!iter->PrepareValue()) {
+          assert(!iter->Valid());
+          assert(!iter->status().ok());
+        }
+      }
 
       if (!iter->status().ok() && IsErrorInjectedAndRetryable(iter->status())) {
         return iter->status();
@@ -1906,7 +1947,9 @@ void StressTest::VerifyIterator(
                << ", iterate_lower_bound: "
                << (ro.iterate_lower_bound
                        ? ro.iterate_lower_bound->ToString(true).c_str()
-                       : "");
+                       : "")
+               << ", allow_unprepared_value: " << ro.allow_unprepared_value;
+
   if (iter->Valid() && !cmp_iter->Valid()) {
     if (pe != nullptr) {
       if (!pe->InDomain(seek_key)) {
@@ -2000,6 +2043,7 @@ void StressTest::VerifyIterator(
       *diverged = true;
     }
   }
+
   if (*diverged) {
     fprintf(stderr, "VerifyIterator failed. Control CF %s\n",
             cmp_cfh->GetName().c_str());
@@ -4133,6 +4177,18 @@ void InitializeOptionsFromFlags(
   options.default_temperature =
       StringToTemperature(FLAGS_default_temperature.c_str());
 
+  if (!FLAGS_file_temperature_age_thresholds.empty()) {
+    Status s = GetColumnFamilyOptionsFromString(
+        {}, options,
+        "compaction_options_fifo={file_temperature_age_thresholds=" +
+            FLAGS_file_temperature_age_thresholds + "}",
+        &options);
+    if (!s.ok()) {
+      fprintf(stderr, "While setting file_temperature_age_thresholds: %s\n",
+              s.ToString().c_str());
+      exit(1);
+    }
+  }
   options.preclude_last_level_data_seconds =
       FLAGS_preclude_last_level_data_seconds;
   options.preserve_internal_time_seconds = FLAGS_preserve_internal_time_seconds;

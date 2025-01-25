@@ -666,7 +666,7 @@ class NonBatchedOpsStressTest : public StressTest {
       if (FLAGS_rate_limit_auto_wal_flush) {
         wo.rate_limiter_priority = Env::IO_USER;
       }
-      Status s = NewTxn(wo, &txn);
+      Status s = NewTxn(wo, thread, &txn);
       if (!s.ok()) {
         fprintf(stderr, "NewTxn error: %s\n", s.ToString().c_str());
         shared->SafeTerminate();
@@ -1127,7 +1127,7 @@ class NonBatchedOpsStressTest : public StressTest {
         write_options.rate_limiter_priority = Env::IO_USER;
       }
 
-      const Status s = NewTxn(write_options, &txn);
+      const Status s = NewTxn(write_options, thread, &txn);
       if (!s.ok()) {
         fprintf(stderr, "NewTxn error: %s\n", s.ToString().c_str());
         thread->shared->SafeTerminate();
@@ -1515,6 +1515,13 @@ class NonBatchedOpsStressTest : public StressTest {
         }
       }
 
+      if (ro_copy.allow_unprepared_value) {
+        if (!iter->PrepareValue()) {
+          s = iter->status();
+          break;
+        }
+      }
+
       if (!VerifyWideColumns(iter->value(), iter->columns())) {
         s = Status::Corruption("Value and columns inconsistent",
                                DebugString(iter->value(), iter->columns()));
@@ -1645,6 +1652,7 @@ class NonBatchedOpsStressTest : public StressTest {
     // To track whether WAL write may have succeeded during the initial failed
     // write
     bool initial_wal_write_may_succeed = true;
+    bool commit_bypass_memtable = false;
 
     PendingExpectedValue pending_expected_value =
         shared->PreparePut(rand_column_family, rand_key);
@@ -1706,9 +1714,10 @@ class NonBatchedOpsStressTest : public StressTest {
             s = db_->Put(write_opts, cfh, k, write_ts, v);
           }
         } else {
-          s = ExecuteTransaction(write_opts, thread, [&](Transaction& txn) {
-            return txn.Put(cfh, k, v);
-          });
+          s = ExecuteTransaction(
+              write_opts, thread,
+              [&](Transaction& txn) { return txn.Put(cfh, k, v); },
+              &commit_bypass_memtable);
         }
       }
       UpdateIfInitialWriteFails(db_stress_env, s, &initial_write_s,
@@ -1772,6 +1781,7 @@ class NonBatchedOpsStressTest : public StressTest {
     // To track whether WAL write may have succeeded during the initial failed
     // write
     bool initial_wal_write_may_succeed = true;
+    bool commit_bypass_memtable = false;
 
     // Use delete if the key may be overwritten and a single deletion
     // otherwise.
@@ -1796,13 +1806,14 @@ class NonBatchedOpsStressTest : public StressTest {
             s = db_->Delete(write_opts, cfh, key, write_ts);
           }
         } else {
-          s = ExecuteTransaction(write_opts, thread, [&](Transaction& txn) {
-            return txn.Delete(cfh, key);
-          });
+          s = ExecuteTransaction(
+              write_opts, thread,
+              [&](Transaction& txn) { return txn.Delete(cfh, key); },
+              &commit_bypass_memtable);
         }
-        UpdateIfInitialWriteFails(db_stress_env, s, &initial_write_s,
-                                  &initial_wal_write_may_succeed,
-                                  &wait_for_recover_start_time);
+        UpdateIfInitialWriteFails(
+            db_stress_env, s, &initial_write_s, &initial_wal_write_may_succeed,
+            &wait_for_recover_start_time, commit_bypass_memtable);
       } while (!s.ok() && IsErrorInjectedAndRetryable(s) &&
                initial_wal_write_may_succeed);
 
@@ -1852,13 +1863,14 @@ class NonBatchedOpsStressTest : public StressTest {
             s = db_->SingleDelete(write_opts, cfh, key, write_ts);
           }
         } else {
-          s = ExecuteTransaction(write_opts, thread, [&](Transaction& txn) {
-            return txn.SingleDelete(cfh, key);
-          });
+          s = ExecuteTransaction(
+              write_opts, thread,
+              [&](Transaction& txn) { return txn.SingleDelete(cfh, key); },
+              &commit_bypass_memtable);
         }
-        UpdateIfInitialWriteFails(db_stress_env, s, &initial_write_s,
-                                  &initial_wal_write_may_succeed,
-                                  &wait_for_recover_start_time);
+        UpdateIfInitialWriteFails(
+            db_stress_env, s, &initial_write_s, &initial_wal_write_may_succeed,
+            &wait_for_recover_start_time, commit_bypass_memtable);
       } while (!s.ok() && IsErrorInjectedAndRetryable(s) &&
                initial_wal_write_may_succeed);
 
@@ -1994,9 +2006,8 @@ class NonBatchedOpsStressTest : public StressTest {
     // a continuous range of keys, the second one with a standalone range
     // deletion for all the keys. This is to exercise the standalone range
     // deletion file's compaction input optimization.
-    // TODO(yuzhangyu): make this an option.
-    bool test_standalone_range_deletion =
-        thread->rand.OneInOpt(10) && FLAGS_delrangepercent > 0;
+    bool test_standalone_range_deletion = thread->rand.OneInOpt(
+        FLAGS_test_ingest_standalone_range_deletion_one_in);
     std::vector<std::string> external_files;
     const std::string sst_filename =
         FLAGS_db + "/." + std::to_string(thread->tid) + ".sst";
@@ -2362,6 +2373,16 @@ class NonBatchedOpsStressTest : public StressTest {
     uint64_t curr = 0;
     while (true) {
       assert(last_key < ub);
+
+      if (iter->Valid() && ro.allow_unprepared_value) {
+        op_logs += "*";
+
+        if (!iter->PrepareValue()) {
+          assert(!iter->Valid());
+          assert(!iter->status().ok());
+        }
+      }
+
       if (!iter->Valid()) {
         if (!iter->status().ok()) {
           if (IsErrorInjectedAndRetryable(iter->status())) {
@@ -2424,6 +2445,16 @@ class NonBatchedOpsStressTest : public StressTest {
     last_key = ub;
     while (true) {
       assert(lb < last_key);
+
+      if (iter->Valid() && ro.allow_unprepared_value) {
+        op_logs += "*";
+
+        if (!iter->PrepareValue()) {
+          assert(!iter->Valid());
+          assert(!iter->status().ok());
+        }
+      }
+
       if (!iter->Valid()) {
         if (!iter->status().ok()) {
           if (IsErrorInjectedAndRetryable(iter->status())) {
@@ -2562,6 +2593,16 @@ class NonBatchedOpsStressTest : public StressTest {
     }
 
     for (int64_t i = 0; i < num_iter && iter->Valid(); ++i) {
+      if (ro.allow_unprepared_value) {
+        op_logs += "*";
+
+        if (!iter->PrepareValue()) {
+          assert(!iter->Valid());
+          assert(!iter->status().ok());
+          break;
+        }
+      }
+
       if (!check_columns()) {
         return Status::OK();
       }
@@ -2839,7 +2880,7 @@ class NonBatchedOpsStressTest : public StressTest {
           const size_t sz = GenerateValue(value_base, value, sizeof(value));
           const Slice v(value, sz);
 
-          if (op == Op::PutOrPutEntity) {
+          if (op == Op::PutOrPutEntity || !FLAGS_use_merge) {
             if (FLAGS_use_put_entity_one_in > 0 &&
                 (value_base % FLAGS_use_put_entity_one_in) == 0) {
               s = txn->PutEntity(cfh, k, GenerateWideColumns(value_base, v));
