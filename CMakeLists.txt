@@ -716,6 +716,7 @@ set(SOURCES
         db/log_reader.cc
         db/log_writer.cc
         db/malloc_stats.cc
+        db/manifest_ops.cc
         db/memtable.cc
         db/memtable_list.cc
         db/merge_helper.cc
@@ -779,6 +780,7 @@ set(SOURCES
         memtable/hash_skiplist_rep.cc
         memtable/skiplistrep.cc
         memtable/vectorrep.cc
+        memtable/wbwi_memtable.cc
         memtable/write_buffer_manager.cc
         monitoring/histogram.cc
         monitoring/histogram_windowing.cc

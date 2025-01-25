@@ -466,7 +466,7 @@ void SuperVersion::Cleanup() {
   // decrement reference to the immutable MemtableList
   // this SV object was pointing to.
   imm->Unref(&to_delete);
-  MemTable* m = mem->Unref();
+  ReadOnlyMemTable* m = mem->Unref();
   if (m != nullptr) {
     auto* memory_usage = current->cfd()->imm()->current_memory_usage();
     assert(*memory_usage >= m->ApproximateMemoryUsage());
@@ -693,9 +693,9 @@ ColumnFamilyData::~ColumnFamilyData() {
   if (mem_ != nullptr) {
     delete mem_->Unref();
   }
-  autovector<MemTable*> to_delete;
+  autovector<ReadOnlyMemTable*> to_delete;
   imm_.current()->Unref(&to_delete);
-  for (MemTable* m : to_delete) {
+  for (auto* m : to_delete) {
     delete m;
   }
 
@@ -1208,7 +1208,7 @@ Status ColumnFamilyData::RangesOverlapWithMemtables(
   MergeIteratorBuilder merge_iter_builder(&internal_comparator_, &arena);
   merge_iter_builder.AddIterator(super_version->mem->NewIterator(
       read_opts, /*seqno_to_time_mapping=*/nullptr, &arena,
-      /*prefix_extractor=*/nullptr));
+      /*prefix_extractor=*/nullptr, /*for_flush=*/false));
   super_version->imm->AddIterators(read_opts, /*seqno_to_time_mapping=*/nullptr,
                                    /*prefix_extractor=*/nullptr,
                                    &merge_iter_builder,
@@ -1561,6 +1561,11 @@ Status ColumnFamilyData::SetOptions(
       BuildColumnFamilyOptions(initial_cf_options_, mutable_cf_options_);
   ConfigOptions config_opts;
   config_opts.mutable_options_only = true;
+#ifndef NDEBUG
+  if (TEST_allowSetOptionsImmutableInMutable) {
+    config_opts.mutable_options_only = false;
+  }
+#endif
   Status s = GetColumnFamilyOptionsFromMap(config_opts, cf_opts, options_map,
                                            &cf_opts);
   if (s.ok()) {

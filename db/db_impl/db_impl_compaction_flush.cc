@@ -753,7 +753,7 @@ Status DBImpl::AtomicFlushMemTablesToOutputFiles(
 
   if (s.ok()) {
     autovector<ColumnFamilyData*> tmp_cfds;
-    autovector<const autovector<MemTable*>*> mems_list;
+    autovector<const autovector<ReadOnlyMemTable*>*> mems_list;
     autovector<const MutableCFOptions*> mutable_cf_options_list;
     autovector<FileMetaData*> tmp_file_meta;
     autovector<std::list<std::unique_ptr<FlushJobInfo>>*>
@@ -1457,11 +1457,6 @@ Status DBImpl::CompactFilesImpl(
     input_set.insert(TableFileNameToNumber(file_name));
   }
 
-  ColumnFamilyMetaData cf_meta;
-  // TODO(yhchiang): can directly use version here if none of the
-  // following functions call is pluggable to external developers.
-  version->GetColumnFamilyMetaData(&cf_meta);
-
   if (output_path_id < 0) {
     if (cfd->ioptions()->cf_paths.size() == 1U) {
       output_path_id = 0;
@@ -1482,7 +1477,7 @@ Status DBImpl::CompactFilesImpl(
 
   std::vector<CompactionInputFiles> input_files;
   Status s = cfd->compaction_picker()->SanitizeAndConvertCompactionInputFiles(
-      &input_set, cf_meta, output_level, version->storage_info(), &input_files);
+      &input_set, output_level, version, &input_files);
   TEST_SYNC_POINT(
       "DBImpl::CompactFilesImpl::PostSanitizeAndConvertCompactionInputFiles");
   if (!s.ok()) {
@@ -3991,7 +3986,10 @@ Status DBImpl::BackgroundCompaction(bool* made_progress,
       // Sanity checking that compaction files are freed.
       for (size_t i = 0; i < c->num_input_levels(); i++) {
         for (size_t j = 0; j < c->inputs(i)->size(); j++) {
-          assert(!c->input(i, j)->being_compacted);
+          // When status is not OK, compaction's result installation failed and
+          // no new Version installed. The files could have been released and
+          // picked up again by other compaction attempts.
+          assert(!c->input(i, j)->being_compacted || !status.ok());
         }
       }
       std::unordered_set<Compaction*>* cip = c->column_family_data()

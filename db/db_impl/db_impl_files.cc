@@ -449,14 +449,8 @@ void DBImpl::PurgeObsoleteFiles(JobContext& state, bool schedule_only) {
       // File is being deleted (actually obsolete)
       auto number = file.metadata->fd.GetNumber();
       candidate_files.emplace_back(MakeTableFileName(number), file.path);
-      if (handle == nullptr) {
-        // For files not "pinned" in table cache
-        handle = TableCache::Lookup(table_cache_.get(), number);
-      }
-      if (handle) {
-        TableCache::ReleaseObsolete(table_cache_.get(), handle,
-                                    file.uncache_aggressiveness);
-      }
+      TableCache::ReleaseObsolete(table_cache_.get(), number, handle,
+                                  file.uncache_aggressiveness);
     }
     file.DeleteMetadata();
   }
@@ -572,9 +566,17 @@ void DBImpl::PurgeObsoleteFiles(JobContext& state, bool schedule_only) {
       case kTableFile:
         // If the second condition is not there, this makes
         // DontDeletePendingOutputs fail
+        // FIXME: but should NOT keep if it came from sst_delete_files?
         keep = (sst_live_set.find(number) != sst_live_set.end()) ||
                number >= state.min_pending_output;
         if (!keep) {
+          // NOTE: sometimes redundant (if came from sst_delete_files)
+          // We don't know which column family is applicable here so we don't
+          // know what uncache_aggressiveness would be used with
+          // ReleaseObsolete(). Anyway, obsolete files ideally go into
+          // sst_delete_files for better/quicker handling, and this is just a
+          // backstop.
+          TableCache::Evict(table_cache_.get(), number);
           files_to_del.insert(number);
         }
         break;
@@ -739,7 +741,8 @@ void DBImpl::DeleteObsoleteFiles() {
 VersionEdit GetDBRecoveryEditForObsoletingMemTables(
     VersionSet* vset, const ColumnFamilyData& cfd,
     const autovector<VersionEdit*>& edit_list,
-    const autovector<MemTable*>& memtables, LogsWithPrepTracker* prep_tracker) {
+    const autovector<ReadOnlyMemTable*>& memtables,
+    LogsWithPrepTracker* prep_tracker) {
   VersionEdit wal_deletion_edit;
   uint64_t min_wal_number_to_keep = 0;
   assert(edit_list.size() > 0);
@@ -769,12 +772,12 @@ VersionEdit GetDBRecoveryEditForObsoletingMemTables(
 }
 
 uint64_t FindMinPrepLogReferencedByMemTable(
-    VersionSet* vset, const autovector<MemTable*>& memtables_to_flush) {
+    VersionSet* vset, const autovector<ReadOnlyMemTable*>& memtables_to_flush) {
   uint64_t min_log = 0;
 
   // we must look through the memtables for two phase transactions
   // that have been committed but not yet flushed
-  std::unordered_set<MemTable*> memtables_to_flush_set(
+  std::unordered_set<ReadOnlyMemTable*> memtables_to_flush_set(
       memtables_to_flush.begin(), memtables_to_flush.end());
   for (auto loop_cfd : *vset->GetColumnFamilySet()) {
     if (loop_cfd->IsDropped()) {
@@ -799,12 +802,12 @@ uint64_t FindMinPrepLogReferencedByMemTable(
 }
 
 uint64_t FindMinPrepLogReferencedByMemTable(
-    VersionSet* vset,
-    const autovector<const autovector<MemTable*>*>& memtables_to_flush) {
+    VersionSet* vset, const autovector<const autovector<ReadOnlyMemTable*>*>&
+                          memtables_to_flush) {
   uint64_t min_log = 0;
 
-  std::unordered_set<MemTable*> memtables_to_flush_set;
-  for (const autovector<MemTable*>* memtables : memtables_to_flush) {
+  std::unordered_set<ReadOnlyMemTable*> memtables_to_flush_set;
+  for (const autovector<ReadOnlyMemTable*>* memtables : memtables_to_flush) {
     memtables_to_flush_set.insert(memtables->begin(), memtables->end());
   }
   for (auto loop_cfd : *vset->GetColumnFamilySet()) {
@@ -896,7 +899,7 @@ uint64_t PrecomputeMinLogNumberToKeepNon2PC(
 uint64_t PrecomputeMinLogNumberToKeep2PC(
     VersionSet* vset, const ColumnFamilyData& cfd_to_flush,
     const autovector<VersionEdit*>& edit_list,
-    const autovector<MemTable*>& memtables_to_flush,
+    const autovector<ReadOnlyMemTable*>& memtables_to_flush,
     LogsWithPrepTracker* prep_tracker) {
   assert(vset != nullptr);
   assert(prep_tracker != nullptr);
@@ -937,7 +940,7 @@ uint64_t PrecomputeMinLogNumberToKeep2PC(
 uint64_t PrecomputeMinLogNumberToKeep2PC(
     VersionSet* vset, const autovector<ColumnFamilyData*>& cfds_to_flush,
     const autovector<autovector<VersionEdit*>>& edit_lists,
-    const autovector<const autovector<MemTable*>*>& memtables_to_flush,
+    const autovector<const autovector<ReadOnlyMemTable*>*>& memtables_to_flush,
     LogsWithPrepTracker* prep_tracker) {
   assert(vset != nullptr);
   assert(prep_tracker != nullptr);

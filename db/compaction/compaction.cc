@@ -345,8 +345,9 @@ Compaction::Compaction(
           _compaction_reason == CompactionReason::kExternalSstIngestion ||
                   _compaction_reason == CompactionReason::kRefitLevel
               ? Compaction::kInvalidLevel
-              : EvaluatePenultimateLevel(vstorage, immutable_options_,
-                                         start_level_, output_level_)) {
+              : EvaluatePenultimateLevel(vstorage, mutable_cf_options_,
+                                         immutable_options_, start_level_,
+                                         output_level_)) {
   MarkFilesBeingCompacted(true);
   if (is_manual_compaction_) {
     compaction_reason_ = CompactionReason::kManualCompaction;
@@ -367,9 +368,10 @@ Compaction::Compaction(
   }
 #endif
 
-  // setup input_levels_
+  // setup input_levels_ and filtered_input_levels_
   {
     input_levels_.resize(num_input_levels());
+    filtered_input_levels_.resize(num_input_levels());
     if (earliest_snapshot_.has_value()) {
       FilterInputsForCompactionIterator();
     } else {
@@ -935,6 +937,25 @@ bool Compaction::DoesInputReferenceBlobFiles() const {
   return false;
 }
 
+uint64_t Compaction::MaxInputFileNewestKeyTime(const InternalKey* start,
+                                               const InternalKey* end) const {
+  uint64_t newest_key_time = kUnknownNewestKeyTime;
+  const InternalKeyComparator& icmp =
+      column_family_data()->internal_comparator();
+  for (const auto& level_files : inputs_) {
+    for (const auto& file : level_files.files) {
+      if (start != nullptr && icmp.Compare(file->largest, *start) < 0) {
+        continue;
+      }
+      if (end != nullptr && icmp.Compare(file->smallest, *end) > 0) {
+        continue;
+      }
+      newest_key_time = std::max(newest_key_time, file->TryGetNewestKeyTime());
+    }
+  }
+  return newest_key_time;
+}
+
 uint64_t Compaction::MinInputFileOldestAncesterTime(
     const InternalKey* start, const InternalKey* end) const {
   uint64_t min_oldest_ancester_time = std::numeric_limits<uint64_t>::max();
@@ -970,6 +991,7 @@ uint64_t Compaction::MinInputFileEpochNumber() const {
 
 int Compaction::EvaluatePenultimateLevel(
     const VersionStorageInfo* vstorage,
+    const MutableCFOptions& mutable_cf_options,
     const ImmutableOptions& immutable_options, const int start_level,
     const int output_level) {
   // TODO: currently per_key_placement feature only support level and universal
@@ -1001,7 +1023,7 @@ int Compaction::EvaluatePenultimateLevel(
   }
 
   bool supports_per_key_placement =
-      immutable_options.preclude_last_level_data_seconds > 0;
+      mutable_cf_options.preclude_last_level_data_seconds > 0;
 
   // it could be overridden by unittest
   TEST_SYNC_POINT_CALLBACK("Compaction::SupportsPerKeyPlacement:Enabled",
@@ -1064,6 +1086,7 @@ void Compaction::FilterInputsForCompactionIterator() {
           ucmp->CompareWithoutTimestamp(rangedel_end_ukey,
                                         file->largest.user_key()) > 0) {
         non_start_level_input_files_filtered_.back().back() = true;
+        filtered_input_levels_[level].push_back(file);
       } else {
         non_start_level_input_files.back().push_back(file);
       }

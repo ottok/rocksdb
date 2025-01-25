@@ -288,8 +288,8 @@ void CompactionJob::Prepare() {
   // to encode seqno->time to the output files.
 
   uint64_t preserve_time_duration =
-      std::max(c->immutable_options()->preserve_internal_time_seconds,
-               c->immutable_options()->preclude_last_level_data_seconds);
+      std::max(c->mutable_cf_options()->preserve_internal_time_seconds,
+               c->mutable_cf_options()->preclude_last_level_data_seconds);
 
   if (preserve_time_duration > 0) {
     const ReadOptions read_options(Env::IOActivity::kCompaction);
@@ -326,8 +326,8 @@ void CompactionJob::Prepare() {
       seqno_to_time_mapping_.Enforce(_current_time);
       seqno_to_time_mapping_.GetCurrentTieringCutoffSeqnos(
           static_cast<uint64_t>(_current_time),
-          c->immutable_options()->preserve_internal_time_seconds,
-          c->immutable_options()->preclude_last_level_data_seconds,
+          c->mutable_cf_options()->preserve_internal_time_seconds,
+          c->mutable_cf_options()->preclude_last_level_data_seconds,
           &preserve_time_min_seqno_, &preclude_last_level_min_seqno_);
     }
     // For accuracy of the GetProximalSeqnoBeforeTime queries above, we only
@@ -911,19 +911,23 @@ Status CompactionJob::Install(const MutableCFOptions& mutable_cf_options,
   ROCKS_LOG_BUFFER(
       log_buffer_,
       "[%s] compacted to: %s, MB/sec: %.1f rd, %.1f wr, level %d, "
-      "files in(%d, %d) out(%d +%d blob) "
-      "MB in(%.1f, %.1f +%.1f blob) out(%.1f +%.1f blob), "
+      "files in(%d, %d) filtered(%d, %d) out(%d +%d blob) "
+      "MB in(%.1f, %.1f +%.1f blob) filtered(%.1f, %.1f) out(%.1f +%.1f blob), "
       "read-write-amplify(%.1f) write-amplify(%.1f) %s, records in: %" PRIu64
       ", records dropped: %" PRIu64 " output_compression: %s\n",
       column_family_name.c_str(), vstorage->LevelSummary(&tmp),
       bytes_read_per_sec, bytes_written_per_sec,
       compact_->compaction->output_level(),
       stats.num_input_files_in_non_output_levels,
-      stats.num_input_files_in_output_level, stats.num_output_files,
+      stats.num_input_files_in_output_level,
+      stats.num_filtered_input_files_in_non_output_levels,
+      stats.num_filtered_input_files_in_output_level, stats.num_output_files,
       stats.num_output_files_blob, stats.bytes_read_non_output_levels / kMB,
       stats.bytes_read_output_level / kMB, stats.bytes_read_blob / kMB,
-      stats.bytes_written / kMB, stats.bytes_written_blob / kMB, read_write_amp,
-      write_amp, status.ToString().c_str(), stats.num_input_records,
+      stats.bytes_skipped_non_output_levels / kMB,
+      stats.bytes_skipped_output_level / kMB, stats.bytes_written / kMB,
+      stats.bytes_written_blob / kMB, read_write_amp, write_amp,
+      status.ToString().c_str(), stats.num_input_records,
       stats.num_dropped_records,
       CompressionTypeToString(compact_->compaction->output_compression())
           .c_str());
@@ -1582,6 +1586,8 @@ Status CompactionJob::FinishCompactionOutputFile(
   const uint64_t current_entries = outputs.NumEntries();
 
   s = outputs.Finish(s, seqno_to_time_mapping_);
+  TEST_SYNC_POINT_CALLBACK(
+      "CompactionJob::FinishCompactionOutputFile()::AfterFinish", &s);
 
   if (s.ok()) {
     // With accurate smallest and largest key, we can get a slightly more
@@ -1914,6 +1920,10 @@ Status CompactionJob::OpenCompactionOutputFile(SubcompactionState* sub_compact,
     oldest_ancester_time = current_time;
   }
 
+  uint64_t newest_key_time = sub_compact->compaction->MaxInputFileNewestKeyTime(
+      sub_compact->start.has_value() ? &tmp_start : nullptr,
+      sub_compact->end.has_value() ? &tmp_end : nullptr);
+
   // Initialize a SubcompactionState::Output and add it to sub_compact->outputs
   uint64_t epoch_number = sub_compact->compaction->MinInputFileEpochNumber();
   {
@@ -1963,7 +1973,7 @@ Status CompactionJob::OpenCompactionOutputFile(SubcompactionState* sub_compact,
       cfd->internal_tbl_prop_coll_factories(),
       sub_compact->compaction->output_compression(),
       sub_compact->compaction->output_compression_opts(), cfd->GetID(),
-      cfd->GetName(), sub_compact->compaction->output_level(),
+      cfd->GetName(), sub_compact->compaction->output_level(), newest_key_time,
       bottommost_level_, TableFileCreationReason::kCompaction,
       0 /* oldest_key_time */, current_time, db_id_, db_session_id_,
       sub_compact->compaction->max_output_file_size(), file_number,
@@ -2003,7 +2013,6 @@ bool CompactionJob::UpdateCompactionStats(uint64_t* num_input_range_del) {
   bool has_error = false;
   const ReadOptions read_options(Env::IOActivity::kCompaction);
   const auto& input_table_properties = compaction->GetInputTableProperties();
-  // TODO(yuzhangyu): add dedicated stats for filtered files.
   for (int input_level = 0;
        input_level < static_cast<int>(compaction->num_input_levels());
        ++input_level) {
@@ -2043,6 +2052,23 @@ bool CompactionJob::UpdateCompactionStats(uint64_t* num_input_range_del) {
         *num_input_range_del += file_num_range_del;
       }
     }
+
+    const std::vector<FileMetaData*>& filtered_flevel =
+        compaction->filtered_input_levels(input_level);
+    size_t num_filtered_input_files = filtered_flevel.size();
+    uint64_t* bytes_skipped;
+    if (compaction->level(input_level) != compaction->output_level()) {
+      compaction_stats_.stats.num_filtered_input_files_in_non_output_levels +=
+          static_cast<int>(num_filtered_input_files);
+      bytes_skipped = &compaction_stats_.stats.bytes_skipped_non_output_levels;
+    } else {
+      compaction_stats_.stats.num_filtered_input_files_in_output_level +=
+          static_cast<int>(num_filtered_input_files);
+      bytes_skipped = &compaction_stats_.stats.bytes_skipped_output_level;
+    }
+    for (const FileMetaData* filtered_file_meta : filtered_flevel) {
+      *bytes_skipped += filtered_file_meta->fd.GetFileSize();
+    }
   }
 
   assert(compaction_job_stats_);
@@ -2067,6 +2093,13 @@ void CompactionJob::UpdateCompactionJobStats(
       stats.num_input_files_in_output_level;
   compaction_job_stats_->num_input_files_at_output_level =
       stats.num_input_files_in_output_level;
+  compaction_job_stats_->num_filtered_input_files =
+      stats.num_filtered_input_files_in_non_output_levels +
+      stats.num_filtered_input_files_in_output_level;
+  compaction_job_stats_->num_filtered_input_files_at_output_level =
+      stats.num_filtered_input_files_in_output_level;
+  compaction_job_stats_->total_skipped_input_bytes =
+      stats.bytes_skipped_non_output_levels + stats.bytes_skipped_output_level;
 
   // output information
   compaction_job_stats_->total_output_bytes = stats.bytes_written;

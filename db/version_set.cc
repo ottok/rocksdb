@@ -31,6 +31,7 @@
 #include "db/internal_stats.h"
 #include "db/log_reader.h"
 #include "db/log_writer.h"
+#include "db/manifest_ops.h"
 #include "db/memtable.h"
 #include "db/merge_context.h"
 #include "db/merge_helper.h"
@@ -3386,28 +3387,28 @@ bool ShouldChangeFileTemperature(const ImmutableOptions& ioptions,
   int64_t _current_time;
   auto status = ioptions.clock->GetCurrentTime(&_current_time);
   const uint64_t current_time = static_cast<uint64_t>(_current_time);
-  // We use oldest_ancestor_time of a file to be the estimate age of
-  // the file just older than it. This is the same logic used in
+  // This is the same logic used in
   // FIFOCompactionPicker::PickTemperatureChangeCompaction().
   if (status.ok() && current_time >= ages[0].age) {
     uint64_t create_time_threshold = current_time - ages[0].age;
     Temperature target_temp;
     assert(files.size() >= 1);
-    for (size_t index = files.size() - 1; index >= 1; --index) {
-      FileMetaData* cur_file = files[index];
-      FileMetaData* prev_file = files[index - 1];
+    for (size_t index = files.size(); index >= 1; --index) {
+      FileMetaData* cur_file = files[index - 1];
+      FileMetaData* prev_file = index < 2 ? nullptr : files[index - 2];
       if (!cur_file->being_compacted) {
-        uint64_t oldest_ancestor_time = prev_file->TryGetOldestAncesterTime();
-        if (oldest_ancestor_time == kUnknownOldestAncesterTime) {
-          return false;
+        uint64_t est_newest_key_time = cur_file->TryGetNewestKeyTime(prev_file);
+        // Newer file could have newest_key_time populated
+        if (est_newest_key_time == kUnknownNewestKeyTime) {
+          continue;
         }
-        if (oldest_ancestor_time > create_time_threshold) {
+        if (est_newest_key_time > create_time_threshold) {
           return false;
         }
         target_temp = ages[0].temperature;
         for (size_t i = 1; i < ages.size(); ++i) {
           if (current_time >= ages[i].age &&
-              oldest_ancestor_time <= current_time - ages[i].age) {
+              est_newest_key_time <= current_time - ages[i].age) {
             target_temp = ages[i].temperature;
           }
         }
@@ -4760,7 +4761,7 @@ void VersionStorageInfo::CalculateBaseBytes(const ImmutableOptions& ioptions,
             cur_level_size / options.max_bytes_for_level_multiplier);
         if (lowest_unnecessary_level_ == -1 &&
             cur_level_size <= base_bytes_min &&
-            (ioptions.preclude_last_level_data_seconds == 0 ||
+            (options.preclude_last_level_data_seconds == 0 ||
              i < num_levels_ - 2)) {
           // When per_key_placement is enabled, the penultimate level is
           // necessary.
@@ -4776,7 +4777,7 @@ void VersionStorageInfo::CalculateBaseBytes(const ImmutableOptions& ioptions,
         // which can less than base_bytes_min AND necessary,
         // or there is some unnecessary level.
         assert(first_non_empty_level == num_levels_ - 1 ||
-               ioptions.preclude_last_level_data_seconds > 0 ||
+               options.preclude_last_level_data_seconds > 0 ||
                lowest_unnecessary_level_ != -1);
         // Case 1. If we make target size of last level to be max_level_size,
         // target size of the first non-empty level would be smaller than
@@ -5204,18 +5205,16 @@ VersionSet::~VersionSet() {
   column_family_set_.reset();
 
   for (auto& file : obsolete_files_) {
-    if (file.metadata->table_reader_handle) {
-      // NOTE: DB is shutting down, so file is probably not obsolete, just
-      // no longer referenced by Versions in memory.
-      // For more context, see comment on "table_cache_->EraseUnRefEntries()"
-      // in DBImpl::CloseHelper().
-      // Using uncache_aggressiveness=0 overrides any previous marking to
-      // attempt to uncache the file's blocks (which after cleaning up
-      // column families could cause use-after-free)
-      TableCache::ReleaseObsolete(table_cache_,
-                                  file.metadata->table_reader_handle,
-                                  /*uncache_aggressiveness=*/0);
-    }
+    // NOTE: DB is shutting down, so file is probably not obsolete, just
+    // no longer referenced by Versions in memory.
+    // For more context, see comment on "table_cache_->EraseUnRefEntries()"
+    // in DBImpl::CloseHelper().
+    // Using uncache_aggressiveness=0 overrides any previous marking to
+    // attempt to uncache the file's blocks (which after cleaning up
+    // column families could cause use-after-free)
+    TableCache::ReleaseObsolete(table_cache_, file.metadata->fd.GetNumber(),
+                                file.metadata->table_reader_handle,
+                                /*uncache_aggressiveness=*/0);
     file.DeleteMetadata();
   }
   obsolete_files_.clear();
@@ -6011,41 +6010,6 @@ Status VersionSet::LogAndApplyHelper(ColumnFamilyData* cfd,
   // we return Status::OK() in this case.
   assert(builder || edit->IsWalManipulation());
   return builder ? builder->Apply(edit) : Status::OK();
-}
-
-Status VersionSet::GetCurrentManifestPath(const std::string& dbname,
-                                          FileSystem* fs, bool is_retry,
-                                          std::string* manifest_path,
-                                          uint64_t* manifest_file_number) {
-  assert(fs != nullptr);
-  assert(manifest_path != nullptr);
-  assert(manifest_file_number != nullptr);
-
-  IOOptions opts;
-  std::string fname;
-  if (is_retry) {
-    opts.verify_and_reconstruct_read = true;
-  }
-  Status s = ReadFileToString(fs, CurrentFileName(dbname), opts, &fname);
-  if (!s.ok()) {
-    return s;
-  }
-  if (fname.empty() || fname.back() != '\n') {
-    return Status::Corruption("CURRENT file does not end with newline");
-  }
-  // remove the trailing '\n'
-  fname.resize(fname.size() - 1);
-  FileType type;
-  bool parse_ok = ParseFileName(fname, manifest_file_number, &type);
-  if (!parse_ok || type != kDescriptorFile) {
-    return Status::Corruption("CURRENT file corrupted");
-  }
-  *manifest_path = dbname;
-  if (dbname.back() != '/') {
-    manifest_path->push_back('/');
-  }
-  manifest_path->append(fname);
-  return Status::OK();
 }
 
 Status VersionSet::Recover(

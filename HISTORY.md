@@ -1,28 +1,46 @@
 # Rocksdb Change Log
 > NOTE: Entries for next release do not go here. Follow instructions in `unreleased_history/README.txt`
 
-## 9.8.4 (11/18/2024)
+## 9.10.0 (12/12/2024)
+### New Features
+* Introduce `TransactionOptions::commit_bypass_memtable` to enable transaction commit to bypass memtable insertions. This can be beneficial for transactions with many operations, as it reduces commit time that is mostly spent on memtable insertion.
+
+### Public API Changes
+* Deprecated Remote Compaction APIs (StartV2, WaitForCompleteV2) are completely removed from the codebase
+
 ### Behavior Changes
-* When Remote Compaction is enabled, do not purge OPTIONS file immediately by DeleteObsoleteOptionsFiles() after SetOptions(). Rely on PurgeObsoleteFiles() to clean up obsolete OPTIONS file after each compaction.
+* DB::KeyMayExist() now follows its function comment, which means `value` parameter can be null, and it will be set only if `value_found` is passed in.
 
-## 9.8.3 (11/12/2024)
 ### Bug Fixes
-* Fix missing cases of corruption retry during DB open and read API processing.
+* Fix the issue where compaction incorrectly drops a key when there is a snapshot with a sequence number of zero.
+* Honor ConfigOptions.ignore_unknown_options in ParseStruct()
 
-## 9.8.2 (11/06/2024)
+### Performance Improvements
+* Enable reuse of file system allocated buffer for synchronous prefetching.
+* In buffered IO mode, try to align writes on power of 2 if checksum handoff is not enabled for the file type being written.
+
+## 9.9.0 (11/18/2024)
+### New Features
+* Multi-Column-Family-Iterator (CoalescingIterator/AttributeGroupIterator) is no longer marked as experimental
+* Adds a new table property "rocksdb.newest.key.time" which records the unix timestamp of the newest key. Uses this table property for FIFO TTL and temperature change compaction.
+
 ### Public API Changes
 * Added a new API `Transaction::GetAttributeGroupIterator` that can be used to create a multi-column-family attribute group iterator over the specified column families, including the data from both the transaction and the underlying database. This API is currently supported for optimistic and write-committed pessimistic transactions.
+* Added a new API `Transaction::GetCoalescingIterator` that can be used to create a multi-column-family coalescing iterator over the specified column families, including the data from both the transaction and the underlying database. This API is currently supported for optimistic and write-committed pessimistic transactions.
 
 ### Behavior Changes
 * `BaseDeltaIterator` now honors the read option `allow_unprepared_value`.
 
 ### Bug Fixes
 * `BaseDeltaIterator` now calls `PrepareValue` on the base iterator in case it has been created with the `allow_unprepared_value` read option set. Earlier, such base iterators could lead to incorrect values being exposed from `BaseDeltaIterator`.
+* Fix a leak of obsolete blob files left open until DB::Close(). This bug was introduced in version 9.4.0.
+* Fix missing cases of corruption retry during DB open and read API processing.
+* Fix a bug for transaction db with 2pc where an old WAL may be retained longer than needed (#13127).
+* Fix leaks of some open SST files (until `DB::Close()`) that are written but never become live due to various failures. (We now have a check for such leaks with no outstanding issues.)
 * Fix a bug for replaying WALs for WriteCommitted transaction DB when its user-defined timestamps setting is toggled on/off between DB sessions.
 
-## 9.8.1 (10/31/2024)
-### Bug Fixes
-* Fix a leak of obsolete blob files left open until DB::Close(). This bug was introduced in version 9.4.0.
+### Performance Improvements
+* Fix regression in issue #12038 due to `Options::compaction_readahead_size` greater than `max_sectors_kb` (i.e, largest I/O size that the OS issues to a block device defined in linux)
 
 ## 9.8.0 (10/25/2024)
 ### New Features
@@ -68,7 +86,7 @@ by them. Prior to this change they would be orphaned until the DB is re-opened.
 
 ## 9.6.0 (08/19/2024)
 ### New Features
-* *Best efforts recovery supports recovering to incomplete Version with a clean seqno cut that presents a valid point in time view from the user's perspective, if versioning history doesn't include atomic flush.
+* Best efforts recovery supports recovering to incomplete Version with a clean seqno cut that presents a valid point in time view from the user's perspective, if versioning history doesn't include atomic flush.
 * New option `BlockBasedTableOptions::decouple_partitioned_filters` should improve efficiency in serving read queries because filter and index partitions can consistently target the configured `metadata_block_size`. This option is currently opt-in.
 * Introduce a new mutable CF option `paranoid_memory_checks`. It enables additional validation on data integrity during reads/scanning. Currently, skip list based memtable will validate key ordering during look up and scans.
 
@@ -80,11 +98,11 @@ by them. Prior to this change they would be orphaned until the DB is re-opened.
 * There may be less intra-L0 compaction triggered by total L0 size being too small. We now use compensated file size (tombstones are assigned some value size) when calculating L0 size and reduce the threshold for L0 size limit. This is to avoid accumulating too much data/tombstones in L0.
 
 ### Bug Fixes
-* *Make DestroyDB supports slow deletion when it's configured in `SstFileManager`. The slow deletion is subject to the configured `rate_bytes_per_sec`, but not subject to the `max_trash_db_ratio`.
+* Make DestroyDB supports slow deletion when it's configured in `SstFileManager`. The slow deletion is subject to the configured `rate_bytes_per_sec`, but not subject to the `max_trash_db_ratio`.
 * Fixed a bug where we set unprep_seqs_ even when WriteImpl() fails. This was caught by stress test write fault injection in WriteImpl(). This may have incorrectly caused iteration creation failure for unvalidated writes or returned wrong result for WriteUnpreparedTxn::GetUnpreparedSequenceNumbers().
 * Fixed a bug where successful write right after error recovery for last failed write finishes causes duplicate WAL entries
 * Fixed a data race involving the background error status in `unordered_write` mode.
-* *Fix a bug where file snapshot functions like backup, checkpoint may attempt to copy a non-existing manifest file. #12882
+* Fix a bug where file snapshot functions like backup, checkpoint may attempt to copy a non-existing manifest file. #12882
 * Fix a bug where per kv checksum corruption may be ignored in MultiGet().
 * Fix a race condition in pessimistic transactions that could allow multiple transactions with the same name to be registered simultaneously, resulting in a crash or other unpredictable behavior.
 
@@ -163,7 +181,7 @@ by them. Prior to this change they would be orphaned until the DB is re-opened.
 * Added a new API `GetEntityFromBatchAndDB` to `WriteBatchWithIndex` that can be used for wide-column point lookups with read-your-own-writes consistency. Similarly to `GetFromBatchAndDB`, the API can combine data from the write batch with data from the underlying database if needed. See the API comments for more details.
 * [Experimental] Introduce two new cross-column-family iterators - CoalescingIterator and AttributeGroupIterator. The CoalescingIterator enables users to iterate over multiple column families and access their values and columns. During this iteration, if the same key exists in more than one column family, the keys in the later column family will overshadow the previous ones. The AttributeGroupIterator allows users to gather wide columns per Column Family and create attribute groups while iterating over keys across all CFs.
 * Added a new API `MultiGetEntityFromBatchAndDB` to `WriteBatchWithIndex` that can be used for batched wide-column point lookups with read-your-own-writes consistency. Similarly to `MultiGetFromBatchAndDB`, the API can combine data from the write batch with data from the underlying database if needed. See the API comments for more details.
-* *Adds a `SstFileReader::NewTableIterator` API to support programmatically read a SST file as a raw table file.
+* Adds a `SstFileReader::NewTableIterator` API to support programmatically read a SST file as a raw table file.
 * Add an option to `WaitForCompactOptions` - `wait_for_purge` to make `WaitForCompact()` API wait for background purge to complete
 
 ### Public API Changes
@@ -192,24 +210,24 @@ the whole DB to be dropped right after migration if the migrated data is larger 
 * Fixed a bug where wrong padded bytes are used to generate file checksum and `DataVerificationInfo::checksum` upon file creation
 * Correctly implemented the move semantics of `PinnableWideColumns`.
 * Fixed a bug when the recycle_log_file_num in DBOptions is changed from 0 to non-zero when a DB is reopened. On a subsequent reopen, if a log file created when recycle_log_file_num==0 was reused previously, is alive and is empty, we could end up inserting stale WAL records into the memtable.
-* *Fix a bug where obsolete files' deletion during DB::Open are not rate limited with `SstFilemManager`'s slow deletion feature even if it's configured.
+* Fix a bug where obsolete files' deletion during DB::Open are not rate limited with `SstFilemManager`'s slow deletion feature even if it's configured.
 
 ## 9.1.0 (03/22/2024)
 ### New Features
 * Added an option, `GetMergeOperandsOptions::continue_cb`, to give users the ability to end `GetMergeOperands()`'s lookup process before all merge operands were found.
-* *Add sanity checks for ingesting external files that currently checks if the user key comparator used to create the file is compatible with the column family's user key comparator.
+* Add sanity checks for ingesting external files that currently checks if the user key comparator used to create the file is compatible with the column family's user key comparator.
 *Support ingesting external files for column family that has user-defined timestamps in memtable only enabled.
 * On file systems that support storage level data checksum and reconstruction, retry SST block reads for point lookups, scans, and flush and compaction if there's a checksum mismatch on the initial read.
 * Some enhancements and fixes to experimental Temperature handling features, including new `default_write_temperature` CF option and opening an `SstFileWriter` with a temperature.
 * `WriteBatchWithIndex` now supports wide-column point lookups via the `GetEntityFromBatch` API. See the API comments for more details.
-* *Implement experimental features: API `Iterator::GetProperty("rocksdb.iterator.write-time")` to allow users to get data's approximate write unix time and write data with a specific write time via `WriteBatch::TimedPut` API.
+* Implement experimental features: API `Iterator::GetProperty("rocksdb.iterator.write-time")` to allow users to get data's approximate write unix time and write data with a specific write time via `WriteBatch::TimedPut` API.
 
 ### Public API Changes
 * Best-effort recovery (`best_efforts_recovery == true`) may now be used together with atomic flush (`atomic_flush == true`). The all-or-nothing recovery guarantee for atomically flushed data will be upheld.
 * Remove deprecated option `bottommost_temperature`, already replaced by `last_level_temperature`
 * Added new PerfContext counters for block cache bytes read - block_cache_index_read_byte, block_cache_filter_read_byte, block_cache_compression_dict_read_byte, and block_cache_read_byte.
 * Deprecate experimental Remote Compaction APIs - StartV2() and WaitForCompleteV2() and introduce Schedule() and Wait(). The new APIs essentially does the same thing as the old APIs. They allow taking externally generated unique id to wait for remote compaction to complete.
-* *For API `WriteCommittedTransaction::GetForUpdate`, if the column family enables user-defined timestamp, it was mandated that argument `do_validate` cannot be false, and UDT based validation has to be done with a user set read timestamp. It's updated to make the UDT based validation optional if user sets `do_validate` to false and does not set a read timestamp. With this, `GetForUpdate` skips UDT based validation and it's users' responsibility to enforce the UDT invariant. SO DO NOT skip this UDT-based validation if users do not have ways to enforce the UDT invariant. Ways to enforce the invariant on the users side include manage a monotonically increasing timestamp, commit transactions in a single thread etc.
+* For API `WriteCommittedTransaction::GetForUpdate`, if the column family enables user-defined timestamp, it was mandated that argument `do_validate` cannot be false, and UDT based validation has to be done with a user set read timestamp. It's updated to make the UDT based validation optional if user sets `do_validate` to false and does not set a read timestamp. With this, `GetForUpdate` skips UDT based validation and it's users' responsibility to enforce the UDT invariant. SO DO NOT skip this UDT-based validation if users do not have ways to enforce the UDT invariant. Ways to enforce the invariant on the users side include manage a monotonically increasing timestamp, commit transactions in a single thread etc.
 * Defined a new PerfLevel `kEnableWait` to measure time spent by user threads blocked in RocksDB other than mutex, such as a write thread waiting to be added to a write group, a write thread delayed or stalled etc.
 * `RateLimiter`'s API no longer requires the burst size to be the refill size. Users of `NewGenericRateLimiter()` can now provide burst size in `single_burst_bytes`. Implementors of `RateLimiter::SetSingleBurstBytes()` need to adapt their implementations to match the changed API doc.
 * Add `write_memtable_time` to the newly introduced PerfLevel `kEnableWait`.
@@ -242,7 +260,7 @@ MultiGetBenchmarks.multiGetList10 no_column_family 10000 16 100 1024 thrpt 25 76
 ## 9.0.0 (02/16/2024)
 ### New Features
 * Provide support for FSBuffer for point lookups. Also added support for scans and compactions that don't go through prefetching.
-* *Make `SstFileWriter` create SST files without persisting user defined timestamps when the `Option.persist_user_defined_timestamps` flag is set to false.
+* Make `SstFileWriter` create SST files without persisting user defined timestamps when the `Option.persist_user_defined_timestamps` flag is set to false.
 * Add support for user-defined timestamps in APIs `DeleteFilesInRanges` and `GetPropertiesOfTablesInRange`.
 * Mark wal\_compression feature as production-ready. Currently only compatible with ZSTD compression.
 
@@ -252,9 +270,9 @@ MultiGetBenchmarks.multiGetList10 no_column_family 10000 16 100 1024 thrpt 25 76
 * Exposed mode option to Rate Limiter via c api.
 * Removed deprecated option `access_hint_on_compaction_start`
 * Removed deprecated option `ColumnFamilyOptions::check_flush_compaction_key_order`
-* *Remove the default `WritableFile::GetFileSize` and `FSWritableFile::GetFileSize` implementation that returns 0 and make it pure virtual, so that subclasses are enforced to explicitly provide an implementation.
+* Remove the default `WritableFile::GetFileSize` and `FSWritableFile::GetFileSize` implementation that returns 0 and make it pure virtual, so that subclasses are enforced to explicitly provide an implementation.
 * Removed deprecated option `ColumnFamilyOptions::level_compaction_dynamic_file_size`
-* *Removed tickers with typos "rocksdb.error.handler.bg.errro.count", "rocksdb.error.handler.bg.io.errro.count", "rocksdb.error.handler.bg.retryable.io.errro.count".
+* Removed tickers with typos "rocksdb.error.handler.bg.errro.count", "rocksdb.error.handler.bg.io.errro.count", "rocksdb.error.handler.bg.retryable.io.errro.count".
 * Remove the force mode for `EnableFileDeletions` API because it is unsafe with no known legitimate use.
 * Removed deprecated option `ColumnFamilyOptions::ignore_max_compaction_bytes_for_input`
 * `sst_dump --command=check` now compares the number of records in a table with `num_entries` in table property, and reports corruption if there is a mismatch. API `SstFileDumper::ReadSequential()` is updated to optionally do this verification. (#12322)

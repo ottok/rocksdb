@@ -104,6 +104,7 @@ default_params = {
     # Temporarily disable hash index
     "index_type": lambda: random.choice([0, 0, 0, 2, 2, 3]),
     "ingest_external_file_one_in": lambda: random.choice([1000, 1000000]),
+    "test_ingest_standalone_range_deletion_one_in": lambda: random.choice([0, 5, 10]),
     "iterpercent": 10,
     "lock_wal_one_in": lambda: random.choice([10000, 1000000]),
     "mark_for_compaction_one_file_in": lambda: 10 * random.randint(0, 1),
@@ -341,6 +342,7 @@ default_params = {
     "use_timed_put_one_in": lambda: random.choice([0] * 7 + [1, 5, 10]),
     "universal_max_read_amp": lambda: random.choice([-1] * 3 + [0, 4, 10]),
     "paranoid_memory_checks": lambda: random.choice([0] * 7 + [1]),
+    "allow_unprepared_value": lambda: random.choice([0, 1]),
 }
 _TEST_DIR_ENV_VAR = "TEST_TMPDIR"
 # If TEST_TMPDIR_EXPECTED is not specified, default value will be TEST_TMPDIR
@@ -528,8 +530,9 @@ txn_params = {
     "inplace_update_support": 0,
     # TimedPut is not supported in transaction
     "use_timed_put_one_in": 0,
-    # AttributeGroup not yet supported
-    "use_attribute_group": 0,
+    # txn commit with this option will create a new memtable, keep the
+    # frequency low to reduce stalls
+    "commit_bypass_memtable_one_in": random.choice([0] * 2 + [500, 1000]),
 }
 
 # For optimistic transaction db
@@ -543,8 +546,6 @@ optimistic_txn_params = {
     "inplace_update_support": 0,
     # TimedPut is not supported in transaction
     "use_timed_put_one_in": 0,
-    # AttributeGroup not yet supported
-    "use_attribute_group": 0,
 }
 
 best_efforts_recovery_params = {
@@ -595,16 +596,21 @@ ts_params = {
 }
 
 tiered_params = {
-    # Set tiered compaction hot data time as: 1 minute, 1 hour, 10 hour
-    "preclude_last_level_data_seconds": lambda: random.choice([60, 3600, 36000]),
-    # only test universal compaction for now, level has known issue of
-    # endless compaction
-    "compaction_style": 1,
+    # For Leveled/Universal compaction (ignored for FIFO)
+    # Bias toward times that can elapse during a crash test run series
+    "preclude_last_level_data_seconds": lambda: random.choice([10, 60, 1200, 86400]),
+    "last_level_temperature": "kCold",
+    # For FIFO compaction (ignored otherwise)
+    "file_temperature_age_thresholds": lambda: random.choice(
+        [
+            "{{temperature=kWarm;age=30}:{temperature=kCold;age=300}}",
+            "{{temperature=kCold;age=100}}",
+        ]
+    ),
     # tiered storage doesn't support blob db yet
     "enable_blob_files": 0,
     "use_blob_db": 0,
     "default_write_temperature": lambda: random.choice(["kUnknown", "kHot", "kWarm"]),
-    "last_level_temperature": "kCold",
 }
 
 multiops_txn_default_params = {
@@ -671,6 +677,7 @@ multiops_wc_txn_params = {
     "txn_write_policy": 0,
     # TODO re-enable pipelined write. Not well tested atm
     "enable_pipelined_write": 0,
+    "commit_bypass_memtable_one_in": random.choice([0] * 4 + [100]),
 }
 
 multiops_wp_txn_params = {
@@ -782,12 +789,20 @@ def finalize_and_sanitize(src_params):
         # files, which would be problematic when unsynced data can be lost in
         # crash recoveries.
         dest_params["enable_compaction_filter"] = 0
+    # Remove the following once write-prepared/write-unprepared with/without
+    # unordered write supports timestamped snapshots
+    if dest_params.get("create_timestamped_snapshot_one_in", 0) > 0:
+        dest_params["txn_write_policy"] = 0
+        dest_params["unordered_write"] = 0
     # Only under WritePrepared txns, unordered_write would provide the same guarnatees as vanilla rocksdb
     # unordered_write is only enabled with --txn, and txn_params disables inplace_update_support, so
     # setting allow_concurrent_memtable_write=1 won't conflcit with inplace_update_support.
+    # don't overwrite txn_write_policy
     if dest_params.get("unordered_write", 0) == 1:
-        dest_params["txn_write_policy"] = 1
-        dest_params["allow_concurrent_memtable_write"] = 1
+        if dest_params.get("txn_write_policy", 0) == 1:
+            dest_params["allow_concurrent_memtable_write"] = 1
+        else:
+            dest_params["unordered_write"] = 0
     if dest_params.get("disable_wal", 0) == 1:
         dest_params["atomic_flush"] = 1
         dest_params["sync"] = 0
@@ -802,6 +817,12 @@ def finalize_and_sanitize(src_params):
         # now assertion failures are triggered.
         dest_params["compaction_ttl"] = 0
         dest_params["periodic_compaction_seconds"] = 0
+        # Disable irrelevant tiering options
+        dest_params["preclude_last_level_data_seconds"] = 0
+        dest_params["last_level_temperature"] = "kUnknown"
+    else:
+        # Disable irrelevant tiering options
+        dest_params["file_temperature_age_thresholds"] = ""
     if dest_params["partition_filters"] == 1:
         if dest_params["index_type"] != 2:
             dest_params["partition_filters"] = 0
@@ -827,11 +848,6 @@ def finalize_and_sanitize(src_params):
         dest_params["write_fault_one_in"] = 0
         dest_params["skip_verifydb"] = 1
         dest_params["verify_db_one_in"] = 0
-    # Remove the following once write-prepared/write-unprepared with/without
-    # unordered write supports timestamped snapshots
-    if dest_params.get("create_timestamped_snapshot_one_in", 0) > 0:
-        dest_params["txn_write_policy"] = 0
-        dest_params["unordered_write"] = 0
     # For TransactionDB, correctness testing with unsync data loss is currently
     # compatible with only write committed policy
     if dest_params.get("use_txn") == 1 and dest_params.get("txn_write_policy", 0) != 0:
@@ -843,6 +859,8 @@ def finalize_and_sanitize(src_params):
         dest_params["use_put_entity_one_in"] = 0
         # MultiCfIterator is currently only compatible with write committed policy
         dest_params["use_multi_cf_iterator"] = 0
+        # only works with write committed policy
+        dest_params["commit_bypass_memtable_one_in"] = 0
     # TODO(hx235): enable test_multi_ops_txns with fault injection after stabilizing the CI
     if dest_params.get("test_multi_ops_txns") == 1:
         dest_params["write_fault_one_in"] = 0
@@ -926,7 +944,10 @@ def finalize_and_sanitize(src_params):
         dest_params["check_multiget_consistency"] = 0
         dest_params["check_multiget_entity_consistency"] = 0
     if dest_params.get("disable_wal") == 0:
-        if dest_params.get("reopen") > 0 or (dest_params.get("manual_wal_flush_one_in") and dest_params.get("column_families") != 1):
+        if dest_params.get("reopen") > 0 or (
+            dest_params.get("manual_wal_flush_one_in")
+            and dest_params.get("column_families") != 1
+        ):
             # Reopen with WAL currently requires persisting WAL data before closing for reopen.
             # Previous injected WAL write errors may not be cleared by the time of closing and ready
             # for persisting WAL.
@@ -971,6 +992,24 @@ def finalize_and_sanitize(src_params):
     # can cause checkpoint verification to fail. So make the two mutually exclusive.
     if dest_params.get("checkpoint_one_in") != 0:
         dest_params["lock_wal_one_in"] = 0
+    if (
+        dest_params.get("ingest_external_file_one_in") == 0
+        or dest_params.get("delrangepercent") == 0
+    ):
+        dest_params["test_ingest_standalone_range_deletion_one_in"] = 0
+    if dest_params.get("use_txn", 0) == 1 and dest_params.get("commit_bypass_memtable_one_in", 0) > 0:
+        dest_params["enable_blob_files"] = 0
+        dest_params["allow_setting_blob_options_dynamically"] = 0
+        dest_params["atomic_flush"] = 0
+        dest_params["allow_concurrent_memtable_write"] = 0
+        dest_params["use_put_entity_one_in"] = 0
+        dest_params["use_get_entity"] = 0
+        dest_params["use_multi_get_entity"] = 0
+        dest_params["use_merge"] = 0
+        dest_params["use_full_merge_v1"] = 0
+        dest_params["enable_pipelined_write"] = 0
+        dest_params["use_attribute_group"] = 0
+
     return dest_params
 
 
@@ -1016,6 +1055,14 @@ def gen_cmd_params(args):
         and random.choice([0] * 9 + [1]) == 1
     ):
         params.update(blob_params)
+
+    if "compaction_style" not in params:
+        # Default to leveled compaction
+        # TODO: Fix "Unsafe to store Seq later" with tiered+leveled and
+        # enable that combination rather than falling back to universal.
+        # TODO: There is also an alleged bug with leveled compaction
+        # infinite looping but that likely would not fail the crash test.
+        params["compaction_style"] = 0 if not args.test_tiered_storage else 1
 
     for k, v in vars(args).items():
         if v is not None:
@@ -1145,7 +1192,9 @@ def blackbox_crash_main(args, unknown_args):
     cmd = gen_cmd(
         dict(list(cmd_params.items()) + list({"db": dbname}.items())), unknown_args
     )
-    hit_timeout, retcode, outs, errs = execute_cmd(cmd, cmd_params["verify_timeout"], True)
+    hit_timeout, retcode, outs, errs = execute_cmd(
+        cmd, cmd_params["verify_timeout"], True
+    )
 
     # For the final run
     print_output_and_exit_on_error(outs, errs, args.print_stderr_separately)
@@ -1230,12 +1279,8 @@ def whitebox_crash_main(args, unknown_args):
             # Single level universal has a lot of special logic. Ensure we cover
             # it sometimes.
             if not args.test_tiered_storage and random.randint(0, 1) == 1:
-                additional_opts.update(
-                    {
-                        "num_levels": 1,
-                    }
-                )
-        elif check_mode == 2 and not args.test_tiered_storage:
+                additional_opts["num_levels"] = 1
+        elif check_mode == 2:
             # normal run with FIFO compaction mode
             # ops_per_thread is divided by 5 because FIFO compaction
             # style is quite a bit slower on reads with lot of files
@@ -1244,6 +1289,12 @@ def whitebox_crash_main(args, unknown_args):
                 "ops_per_thread": cmd_params["ops_per_thread"] // 5,
                 "compaction_style": 2,
             }
+            # TODO: test transition from non-FIFO to FIFO with num_levels > 1.
+            # See https://github.com/facebook/rocksdb/pull/10348
+            # For now, tiered storage FIFO (file_temperature_age_thresholds)
+            # requires num_levels == 1 and non-tiered operates that way.
+            if args.test_tiered_storage:
+                additional_opts["num_levels"] = 1
         else:
             # normal run
             additional_opts = {
