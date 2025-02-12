@@ -15,7 +15,7 @@ run them with `--verbose` and read the respective man pages for details.
 To get the Debian packaging source code and have the upstream remote alongside
 it, simply run:
 
-    gbp clone vcs-git:rocksdb --add-upstreamvcs
+    gbp clone vcs-git:rocksdb --add-upstream-vcs
 
 Alternatively, run this to define precisely one upstream branch to be tracked:
 
