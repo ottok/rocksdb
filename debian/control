@@ -13,6 +13,7 @@ Build-Depends:
  libsnappy-dev,
  libzstd-dev,
  zlib1g-dev,
+ do-not-build-on-these-archs [sparc64 ppc64]
 Standards-Version: 4.7.3
 Homepage: https://rocksdb.org/
 Vcs-Browser: https://salsa.debian.org/debian/rocksdb
@@ -20,7 +21,7 @@ Vcs-Git: https://salsa.debian.org/debian/rocksdb.git
 
 Package: librocksdb-dev
 Section: libdevel
-Architecture: amd64 arm64 armel armhf i386 loong64 mips mips64el mipsel ppc64el riscv64 s390x
+Architecture: any
 Depends:
  libbz2-dev,
  libgflags-dev,
@@ -56,7 +57,7 @@ Description: persistent Key-Value Store for Flash and RAM Storage (development)
 
 Package: librocksdb9.11
 Section: libs
-Architecture: amd64 arm64 armel armhf i386 loong64 mips mips64el mipsel ppc64el riscv64 s390x
+Architecture: any
 Depends:
  ${misc:Depends},
  ${shlibs:Depends},
@@ -82,7 +83,7 @@ Description: persistent Key-Value Store for Flash and RAM Storage
      processors
 
 Package: rocksdb-tools
-Architecture: amd64 arm64 armel armhf i386 loong64 mips mips64el mipsel ppc64el riscv64 s390x
+Architecture: any
 Depends:
  ${misc:Depends},
  ${shlibs:Depends},
