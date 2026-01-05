@@ -8,3 +8,6 @@ mips.patch
 arm.patch
 0001-replace-old-sync-with-new-atomic-builtin-equivalents.patch
 rely-on-default-for-optimization-on-Power.patch
+0001-Deprecate-RangePtr-favor-new-RangeOpt-and-OptSlice-1.patch
+0002-Fix-build-13579.patch
+0003-include-cstdint-to-trace_record.h-13651.patch

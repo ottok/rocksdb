@@ -1,0 +1,49 @@
+From ef035d13f8a74f8eb7789c96b0e631fe4a64962a Mon Sep 17 00:00:00 2001
+From: Peter Dillinger <peterd@meta.com>
+Date: Mon, 24 Mar 2025 17:08:17 -0700
+Subject: Deprecate RangePtr, favor new RangeOpt and OptSlice (#13481)
+
+Summary:
+The new API in https://github.com/facebook/rocksdb/issues/13453 is awkward and precarious because of using RangePtr, which encodes optional keys using raw pointers to Slice. We could use `std::optional<Slice>` instead but that is unsatisfyingly a larger object with an inefficient size (typically 17 bytes).
+
+Here I introduce a custom optional Slice type, `OptSlice`, that is the same size as a Slice, and use it in a number of places to clean up code and make some public APIs easier to work with. This includes
+
+* `atomic_replace_range` (not yet released, OK to change)
+* `GetAllKeyVersions()` which gets a behavior change because of its unusual handling of empty keys.
+* `DeleteFilesInRanges()`
+* TODO in follow-up: `CompactRange()`
+
+Most of the diff is associated updates and refactorings. Also
+
+* Move some relevant things out of db.h to keep it as tidy as possible.
+
+Pull Request resolved: https://github.com/facebook/rocksdb/pull/13481
+
+Test Plan: tests updated
+
+Reviewed By: hx235
+
+Differential Revision: D71747774
+
+Pulled By: pdillinger
+
+fbshipit-source-id: b4c8519608d119b8bceca9bb0fd778608f62a141
+---
+ include/rocksdb/slice.h | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/include/rocksdb/slice.h b/include/rocksdb/slice.h
+index 0d7eb5949..115131398 100644
+--- a/include/rocksdb/slice.h
++++ b/include/rocksdb/slice.h
+@@ -20,6 +20,7 @@
+ 
+ #include <cassert>
+ #include <cstddef>
++#include <cstdint>
+ #include <cstdio>
+ #include <cstring>
+ #include <string>
+-- 
+2.30.2
+

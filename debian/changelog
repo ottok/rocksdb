@@ -1,3 +1,10 @@
+rocksdb (9.10.0-2) unstable; urgency=medium
+
+  [ Adrian Bunk <bunk@debian.org> ]
+  * Backport upstream fixes for FTBFS with GCC 15 (closes: #1097799).
+
+ -- Laszlo Boszormenyi (GCS) <gcs@debian.org>  Mon, 05 Jan 2026 22:14:40 +0100
+
 rocksdb (9.10.0-1) unstable; urgency=medium
 
   * New upstream release 9.10.0, see details at
