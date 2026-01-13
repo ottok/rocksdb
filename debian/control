@@ -1,6 +1,5 @@
 Source: rocksdb
 Section: database
-Priority: optional
 Maintainer: Laszlo Boszormenyi (GCS) <gcs@debian.org>
 Uploaders:
  Laszlo Boszormenyi (GCS) <gcs@debian.org>,
