@@ -1,7 +1,7 @@
 Version: 5
 
 Template: Github
-Dversionmangle: s/\+(debian|dfsg|ds|deb)(\.?\d+)?$//
+Dversion-Mangle: s/\+(debian|dfsg|ds|deb)(\.?\d+)?$//
 Owner: facebook
 Project: rocksdb
-Uversionmangle: s/(\d)[_\.\-\+]?((RC|rc|pre|dev|beta|alpha|b|a)[\-\.]?\d*)$/$1~$2/
+Uversion-Mangle: s/(\d)[_\.\-\+]?((RC|rc|pre|dev|beta|alpha|b|a)[\-\.]?\d*)$/$1~$2/

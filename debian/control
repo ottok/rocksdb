@@ -5,8 +5,8 @@ Uploaders:
  Laszlo Boszormenyi (GCS) <gcs@debian.org>,
  Otto Kekäläinen <otto@debian.org>,
 Build-Depends:
- cmake,
  debhelper-compat (= 13),
+ cmake,
  libbz2-dev,
  libgflags-dev,
  liblz4-dev,
