@@ -1,0 +1,43 @@
+From: John Paul Adrian Glaubitz <glaubitz@physik.fu-berlin.de>
+Date: Tue, 13 Jan 2026 20:29:29 -0800
+Subject: Extend MIPS adaptations to apply to all remaining architectures
+ (Closes: #1111226)
+
+The patch "mips.patch" uses a C implementation for rdtsc on MIPS targets.
+
+Extend the changes so that the fallback implementation is used on all
+architectures instead of just triggering the #error statement.
+
+Forwarded: no
+---
+ .../lock/range/range_tree/lib/portability/toku_time.h          | 10 +++-------
+ 1 file changed, 3 insertions(+), 7 deletions(-)
+
+diff --git a/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h b/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h
+index 176cc0e..be5cec3 100644
+--- a/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h
++++ b/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h
+@@ -166,12 +166,6 @@ static inline tokutime_t toku_time_now(void) {
+   unsigned long result;
+   asm volatile("rdtime.d\t%0,$r0" : "=r"(result));
+   return result;
+-#elif defined(__mips__)
+-  // mips apparently only allows rdtsc for superusers, so we fall
+-  // back to gettimeofday.  It's possible clock_gettime would be better.
+-  struct timeval tv;
+-  gettimeofday(&tv, nullptr);
+-  return (uint64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+ #elif (__ARM_ARCH >= 6)
+   uint32_t pmccntr;
+   uint32_t pmuseren;
+@@ -187,7 +181,9 @@ static inline tokutime_t toku_time_now(void) {
+     }
+   }
+ #else
+-#error No timer implementation for this platform
++  struct timeval tv;
++  gettimeofday(&tv, nullptr);
++  return (uint64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+ #endif
+ }
+ 
