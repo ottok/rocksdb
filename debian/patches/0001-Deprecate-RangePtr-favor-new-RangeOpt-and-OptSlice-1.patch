@@ -1,4 +1,3 @@
-From ef035d13f8a74f8eb7789c96b0e631fe4a64962a Mon Sep 17 00:00:00 2001
 From: Peter Dillinger <peterd@meta.com>
 Date: Mon, 24 Mar 2025 17:08:17 -0700
 Subject: Deprecate RangePtr, favor new RangeOpt and OptSlice (#13481)
@@ -33,7 +32,7 @@ fbshipit-source-id: b4c8519608d119b8bceca9bb0fd778608f62a141
  1 file changed, 1 insertion(+)
 
 diff --git a/include/rocksdb/slice.h b/include/rocksdb/slice.h
-index 0d7eb5949..115131398 100644
+index 0d7eb59..1151313 100644
 --- a/include/rocksdb/slice.h
 +++ b/include/rocksdb/slice.h
 @@ -20,6 +20,7 @@
@@ -44,6 +43,3 @@ index 0d7eb5949..115131398 100644
  #include <cstdio>
  #include <cstring>
  #include <string>
--- 
-2.30.2
-

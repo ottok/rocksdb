@@ -1,4 +1,3 @@
-From 07d319f46ecc2ac18dbd812d54dc74ada62eaf59 Mon Sep 17 00:00:00 2001
 From: Jiffin Tony Thottan <thottanjiffin@gmail.com>
 Date: Fri, 13 Jun 2025 09:47:52 -0700
 Subject: include cstdint to trace_record.h (#13651)
@@ -22,7 +21,7 @@ fbshipit-source-id: d213debbda39fdfac01641daa567687fc104d260
  1 file changed, 1 insertion(+)
 
 diff --git a/include/rocksdb/trace_record.h b/include/rocksdb/trace_record.h
-index 8f9c3ee2f..d321f5387 100644
+index 8f9c3ee..d321f53 100644
 --- a/include/rocksdb/trace_record.h
 +++ b/include/rocksdb/trace_record.h
 @@ -5,6 +5,7 @@
@@ -33,6 +32,3 @@ index 8f9c3ee2f..d321f5387 100644
  #include <memory>
  #include <string>
  #include <vector>
--- 
-2.30.2
-
