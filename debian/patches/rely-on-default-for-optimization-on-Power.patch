@@ -13,7 +13,7 @@ But on Debian we want to be compatible with all and default to P8.
  1 file changed, 11 deletions(-)
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 84dfb7c..2c59d65 100644
+index 5bab1fa..8a8ad7e 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -229,17 +229,6 @@ endif()

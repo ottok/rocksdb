@@ -10,12 +10,12 @@ Signed-off-by: Khem Raj <raj.khem@gmail.com>
  1 file changed, 6 insertions(+)
 
 diff --git a/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h b/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h
-index fa8dbea..77d55d4 100644
+index ca60a0d..0f1e49d 100644
 --- a/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h
 +++ b/utilities/transactions/lock/range/range_tree/lib/portability/toku_time.h
 @@ -166,6 +166,12 @@ static inline tokutime_t toku_time_now(void) {
    unsigned long result;
-   asm volatile ("rdtime.d\t%0,$r0" : "=r" (result));
+   asm volatile("rdtime.d\t%0,$r0" : "=r"(result));
    return result;
 +#elif defined(__mips__)
 +  // mips apparently only allows rdtsc for superusers, so we fall

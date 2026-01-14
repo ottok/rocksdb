@@ -7,7 +7,7 @@ Subject: build_reproducible
  1 file changed, 6 insertions(+), 1 deletion(-)
 
 diff --git a/Makefile b/Makefile
-index e2dee45..c850681 100644
+index 317b967..0cc5c5b 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -818,7 +818,12 @@ ifndef NO_UPDATE_BUILD_VERSION

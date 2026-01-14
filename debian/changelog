@@ -1,3 +1,18 @@
+rocksdb (9.11.2-1) UNRELEASED; urgency=medium
+
+  * New upstream release 9.11.2, see details at
+    - https://github.com/facebook/rocksdb/releases/tag/v9.11.2
+  * This is the last RocksDB release in 9.x series. Next version in Debian will
+    be the latest 10.x version which includes breaking API changes.
+  * Update Debian copyright for 2026
+  * Drop redundant `Rules-Requires-Root: no`
+  * Drop redundant `Priority: optional`
+  * Bump Debian Policy version
+  * Update d/watch to use uscan v5 syntax
+  * Apply `debputy reformat --style black`
+
+ -- Otto Kekäläinen <otto@debian.org>  Wed, 14 Jan 2026 00:59:19 +0000
+
 rocksdb (9.10.0-2) unstable; urgency=medium
 
   [ Adrian Bunk <bunk@debian.org> ]
